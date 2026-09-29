@@ -48,7 +48,7 @@ fc_comparator/
   barcode.py         keyboard-wedge scan parsing (part number or operator badge)
   synthetic.py       synthetic board renderer (samples, tests, demos)
   cli.py             inspect / report / export / harvest / set-secret / check / gui
-  ui/                PySide6 touchscreen app
+  ui/                tkinter touchscreen app (standard library; Pillow for fast preview)
 scripts/
   train_classifier.py   train the YOLO classifier and report accuracy with a confusion matrix
   make_samples.py       regenerate samples/
@@ -93,7 +93,8 @@ orientations pass. If it says `fork_left`, only a left-facing fork passes.
 
 ## 2. Installation
 
-Requires Python 3.11 or newer. Everything runs offline once installed.
+Requires Python 3.11 or newer. Everything runs offline once installed. The UI uses tkinter, which ships with Python on
+Windows and macOS; on Debian, Ubuntu and Raspberry Pi OS install it with `sudo apt install python3-tk`.
 
 ### Windows / Linux PC
 
@@ -108,7 +109,7 @@ pip install -r requirements.txt
 ### Raspberry Pi 5 (Raspberry Pi OS Bookworm, 64-bit)
 
 ```bash
-sudo apt install -y python3-venv python3-opencv libgl1
+sudo apt install -y python3-venv python3-tk python3-opencv libgl1
 python3 -m venv --system-site-packages .venv      # reuses the system gpiozero / lgpio
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -440,7 +441,7 @@ pytest -m "not slow"     # skip the YOLO training test
   < 1 s inspection and alert latency.
 * `test_align.py`, `test_classify.py`, `test_alert.py` (fake GPIO devices, fake serial port and a fake Modbus PLC),
   `test_storage.py`, `test_capture.py`, `test_config.py`, `test_barcode.py`, `test_training.py` and `test_ui.py`
-  (offscreen; skipped without PySide6).
+  (drives the real tkinter window; skipped without a display).
 
 ---
 

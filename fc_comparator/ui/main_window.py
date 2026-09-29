@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import logging
-
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QLabel, QMainWindow, QStackedWidget, QVBoxLayout, QWidget
+import tkinter as tk
+from tkinter import ttk
 
 from ..pipeline import Station
 from ..security import verify_secret
@@ -15,146 +13,130 @@ from .inspect_screen import InspectScreen
 from .parts_screen import PartsScreen
 from .settings_screen import SettingsScreen
 from .setup_screen import SetupScreen
-from .widgets import STYLE, PinDialog, big_button, error_box
+from .widgets import Dispatcher, PinDialog, error_box
 
 log = logging.getLogger(__name__)
 
 PROTECTED = {"setup", "parts", "settings"}
+NAV = (("inspect", "Inspect"), ("setup", "Setup / Teach"), ("parts", "Part numbers"),
+       ("history", "History / Reports"), ("settings", "Settings"))
 
 
-class MainWindow(QMainWindow):
-    def __init__(self, station: Station):
-        super().__init__()
+class MainWindow(ttk.Frame):
+    def __init__(self, root: tk.Tk, station: Station):
+        super().__init__(root, padding=8)
+        self.root = root
         self.station = station
         self.cfg = station.cfg
-        self.setWindowTitle(f"FC-Comparator - {self.cfg.station.name}")
-        self.setStyleSheet(STYLE)
-        self._admin = False
+        self.admin = False
+        self.current = "inspect"
         self._pedal = None
+        self.dispatcher = Dispatcher(root)
+        root.title(f"FC-Comparator - {self.cfg.station.name}")
 
-        self.inspect = InspectScreen(station)
-        self.setup = SetupScreen(station)
-        self.parts = PartsScreen(station)
-        self.history = HistoryScreen(station)
-        self.settings = SettingsScreen(station)
-        self.pages = {
-            "inspect": self.inspect, "setup": self.setup, "parts": self.parts,
-            "history": self.history, "settings": self.settings,
-        }
-        self.stack = QStackedWidget()
-        for w in self.pages.values():
-            self.stack.addWidget(w)
-        for w in (self.setup, self.parts, self.settings):
-            w.config_changed.connect(self._on_config_changed)
-
-        nav = QVBoxLayout()
-        self.nav_group = QButtonGroup(self)
-        self.nav_buttons = {}
-        for key, text in (("inspect", "Inspect"), ("setup", "Setup / Teach"), ("parts", "Part numbers"),
-                          ("history", "History / Reports"), ("settings", "Settings")):
-            b = big_button(text, checkable=True)
-            b.setMinimumHeight(80)
-            b.clicked.connect(lambda _=False, k=key: self.go(k))
-            self.nav_group.addButton(b)
+        nav = ttk.Frame(self, width=230)
+        nav.pack(side="left", fill="y", padx=(0, 8))
+        nav.pack_propagate(False)
+        self.nav_buttons: dict[str, ttk.Button] = {}
+        for key, text in NAV:
+            b = ttk.Button(nav, text=text, style="Nav.TButton", command=lambda k=key: self.go(k))
+            b.pack(fill="x", pady=3)
             self.nav_buttons[key] = b
-            nav.addWidget(b)
-        nav.addStretch(1)
-        self.lock_admin_btn = big_button("Leave setup mode")
-        self.lock_admin_btn.clicked.connect(self._leave_admin)
-        self.lock_admin_btn.hide()
-        nav.addWidget(self.lock_admin_btn)
-        self.status = QLabel()
-        self.status.setWordWrap(True)
-        self.status.setStyleSheet("color: #4a5568; font-size: 13px;")
-        nav.addWidget(self.status)
-        nav_w = QWidget()
-        nav_w.setLayout(nav)
-        nav_w.setFixedWidth(230)
+        self.leave_btn = ttk.Button(nav, text="Leave setup mode", command=self.leave_admin)
+        self.status = ttk.Label(nav, style="Muted.TLabel", wraplength=210, justify="left")
+        self.status.pack(side="bottom", fill="x", pady=4)
 
-        central = QWidget()
-        lay = QHBoxLayout(central)
-        lay.addWidget(nav_w)
-        lay.addWidget(self.stack, 1)
-        self.setCentralWidget(central)
+        content = ttk.Frame(self)
+        content.pack(side="left", fill="both", expand=True)
+        content.rowconfigure(0, weight=1)
+        content.columnconfigure(0, weight=1)
+        self.inspect = InspectScreen(content, station, self.dispatcher, app=self)
+        self.setup = SetupScreen(content, station, self.on_config_changed)
+        self.parts = PartsScreen(content, station, self.on_config_changed)
+        self.history = HistoryScreen(content, station)
+        self.settings = SettingsScreen(content, station, self.on_config_changed)
+        self.pages = {"inspect": self.inspect, "setup": self.setup, "parts": self.parts,
+                      "history": self.history, "settings": self.settings}
+        for page in self.pages.values():
+            page.grid(row=0, column=0, sticky="nsew")
 
         self._install_triggers()
         self.go("inspect")
-        self.set_navigation_locked(self.station.lock.locked)
-        self._update_status()
+        self.set_navigation_locked(station.lock.locked)
+        self.update_status()
 
     # -- triggers (foot pedal) -------------------------------------------------
     def _install_triggers(self) -> None:
-        sc = QShortcut(QKeySequence(self.cfg.trigger.key), self)
-        sc.setContext(Qt.ShortcutContext.ApplicationShortcut)
-        sc.activated.connect(self._pedal_pressed)
-        self._shortcut = sc
+        key = self.cfg.trigger.key.strip().strip("<>")
+        try:
+            self.root.bind_all(f"<{key}>", lambda _e: self.pedal_pressed())
+        except tk.TclError:
+            log.error("Invalid trigger.key %r (use a Tk key name such as F9, space, Return)", key)
         if self.cfg.trigger.gpio_pin is not None:
             try:
                 from ..alert.gpio import GpioPedal
 
-                # The gpiozero callback runs on its own thread: go through a Qt signal.
-                self._pedal = GpioPedal(self.cfg.trigger.gpio_pin, self.inspect.trigger_requested.emit)
+                # gpiozero calls back on its own thread: hand over to the Tk main loop.
+                self._pedal = GpioPedal(self.cfg.trigger.gpio_pin, lambda: self.dispatcher.call(self.pedal_pressed))
                 log.info("Foot pedal on GPIO %s", self.cfg.trigger.gpio_pin)
             except Exception as exc:
                 log.error("GPIO foot pedal unavailable: %s", exc)
 
-    def _pedal_pressed(self) -> None:
-        if self.stack.currentWidget() is self.inspect:
+    def pedal_pressed(self) -> None:
+        if self.current == "inspect":
             self.inspect.inspect()
 
     # -- navigation --------------------------------------------------------
-    def go(self, key: str) -> None:
-        if key in PROTECTED and not self._admin:
+    def go(self, key: str) -> bool:
+        if key in PROTECTED and not self.admin:
             if self.station.lock.locked:
                 error_box(self, "Station is locked after an NG. Resolve it first.")
-                self.nav_buttons[self._current_key()].setChecked(True)
-                return
+                return False
             pw = PinDialog.ask(self, "Setup password")
-            if pw is None or not verify_secret(pw, self.cfg.security.setup_password):
-                if pw is not None:
-                    self.station.store.log_event("setup_denied", "", "wrong setup password")
-                    error_box(self, "Wrong password.")
-                self.nav_buttons[self._current_key()].setChecked(True)
-                return
-            self._admin = True
-            self.lock_admin_btn.show()
+            if pw is None:
+                return False
+            if not verify_secret(pw, self.cfg.security.setup_password):
+                self.station.store.log_event("setup_denied", "", "wrong setup password")
+                error_box(self, "Wrong password.")
+                return False
+            self.admin = True
+            self.leave_btn.pack(fill="x", pady=(20, 3))
             self.station.store.log_event("setup_login", "", "")
         page = self.pages[key]
         if hasattr(page, "refresh"):
             page.refresh()
-        self.stack.setCurrentWidget(page)
-        self.nav_buttons[key].setChecked(True)
+        page.tkraise()
+        self.current = key
+        for k, b in self.nav_buttons.items():
+            b.configure(style="NavActive.TButton" if k == key else "Nav.TButton")
         if key == "inspect":
             self.inspect.focus_scan()
-        self._update_status()
+        self.update_status()
+        return True
 
-    def _current_key(self) -> str:
-        cur = self.stack.currentWidget()
-        return next((k for k, w in self.pages.items() if w is cur), "inspect")
-
-    def _leave_admin(self) -> None:
-        self._admin = False
-        self.lock_admin_btn.hide()
+    def leave_admin(self) -> None:
+        self.admin = False
+        self.leave_btn.pack_forget()
         self.go("inspect")
 
     def set_navigation_locked(self, locked: bool) -> None:
         for key, b in self.nav_buttons.items():
-            b.setEnabled(not locked or key in ("inspect", "history"))
+            b.state(["disabled"] if locked and key not in ("inspect", "history") else ["!disabled"])
 
-    def _on_config_changed(self) -> None:
+    def on_config_changed(self) -> None:
         self.inspect.refresh_parts()
-        self._update_status()
+        self.update_status()
 
-    def _update_status(self) -> None:
+    def update_status(self) -> None:
         clf = self.station.inspector.classifier
         align = "on" if self.station.inspector.aligner is not None else "off"
-        self.status.setText(
-            f"Classifier: {clf.name}\nAlignment: {align}\nAlert: {self.cfg.alert.backend}\n"
+        self.status.configure(
+            text=f"Classifier: {clf.name}\nAlignment: {align}\nAlert: {self.cfg.alert.backend}\n"
             f"Mode: {self.cfg.compare.mode}\nSource: {self.cfg.camera.source}"
         )
 
-    def closeEvent(self, event):  # noqa: N802
+    def shutdown(self) -> None:
         self.inspect.stop()
+        self.dispatcher.stop()
         if self._pedal is not None:
             self._pedal.close()
-        super().closeEvent(event)

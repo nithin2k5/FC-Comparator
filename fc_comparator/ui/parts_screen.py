@@ -2,127 +2,102 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (
-    QAbstractItemView,
-    QComboBox,
-    QFormLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QHeaderView,
-    QLineEdit,
-    QTableWidget,
-    QTableWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
+import tkinter as tk
+from collections.abc import Callable
+from tkinter import ttk
 
 from ..config import save_config
 from ..models import EXPECTED_LABELS, PartNumber
 from ..pipeline import Station
-from .widgets import big_button, confirm, error_box
+from .widgets import confirm, error_box
 
 
-class PartsScreen(QWidget):
-    config_changed = Signal()
-
-    def __init__(self, station: Station, parent=None):
-        super().__init__(parent)
+class PartsScreen(ttk.Frame):
+    def __init__(self, master, station: Station, on_config_changed: Callable[[], None]):
+        super().__init__(master)
         self.station = station
         self.cfg = station.cfg
+        self.on_config_changed = on_config_changed
 
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Part number", "Master pattern (row 1 → n)", "Description"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.verticalHeader().hide()
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.itemSelectionChanged.connect(self._on_select)
+        cols = ("code", "pattern", "description")
+        self.table = ttk.Treeview(self, columns=cols, show="headings", selectmode="browse")
+        for c, text, w in zip(cols, ("Part number", "Master pattern (row 1 → n)", "Description"), (140, 380, 300)):
+            self.table.heading(c, text=text)
+            self.table.column(c, width=w, anchor="w")
+        self.table.bind("<<TreeviewSelect>>", lambda _e: self._on_select())
 
-        editor = QGroupBox("Edit part number")
-        form = QFormLayout(editor)
-        self.code = QLineEdit()
-        self.desc = QLineEdit()
-        form.addRow("Part number", self.code)
-        form.addRow("Description", self.desc)
-        self.row_combos: list[QComboBox] = []
+        editor = ttk.LabelFrame(self, text="Edit part number", padding=10)
+        editor.pack(side="right", fill="y")  # packed before the table so it keeps its full width
+        self.table.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        editor.columnconfigure(1, weight=1)
+        self.code_var, self.desc_var = tk.StringVar(), tk.StringVar()
+        ttk.Label(editor, text="Part number").grid(row=0, column=0, sticky="w", pady=4)
+        self.code = ttk.Entry(editor, textvariable=self.code_var, width=24)
+        self.code.grid(row=0, column=1, sticky="ew", pady=4)
+        ttk.Label(editor, text="Description").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(editor, textvariable=self.desc_var).grid(row=1, column=1, sticky="ew", pady=4)
+        self.row_vars: list[tk.StringVar] = []
         for r in range(self.cfg.station.rows):
-            cb = QComboBox()
-            cb.addItems(EXPECTED_LABELS)
-            cb.setToolTip("fork = either orientation; fork_left / fork_right = orientation is checked")
-            self.row_combos.append(cb)
-            form.addRow(f"Row {r + 1}", cb)
-        btns = QHBoxLayout()
-        b_new = big_button("New")
-        b_new.clicked.connect(self.new)
-        b_save = big_button("Save")
-        b_save.clicked.connect(self.save)
-        b_del = big_button("Delete", "danger")
-        b_del.clicked.connect(self.delete)
-        for b in (b_new, b_save, b_del):
-            btns.addWidget(b)
-        form.addRow(btns)
-        editor.setMaximumWidth(520)
-
-        left = QVBoxLayout()
-        left.addWidget(self.table)
-        lay = QHBoxLayout(self)
-        lay.addLayout(left, 1)
-        lay.addWidget(editor)
+            var = tk.StringVar(value=EXPECTED_LABELS[0])
+            ttk.Label(editor, text=f"Row {r + 1}").grid(row=2 + r, column=0, sticky="w", pady=4)
+            ttk.Combobox(editor, textvariable=var, values=list(EXPECTED_LABELS), state="readonly").grid(
+                row=2 + r, column=1, sticky="ew", pady=4
+            )
+            self.row_vars.append(var)
+        n = 2 + self.cfg.station.rows
+        ttk.Label(editor, text="fork = either orientation; fork_left / fork_right = orientation is checked",
+                  style="Muted.TLabel", wraplength=360).grid(row=n, column=0, columnspan=2, sticky="w", pady=6)
+        btns = ttk.Frame(editor)
+        btns.grid(row=n + 1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(btns, text="New", command=self.new).pack(side="left", fill="x", expand=True, padx=(0, 4))
+        ttk.Button(btns, text="Save", command=self.save).pack(side="left", fill="x", expand=True, padx=(0, 4))
+        ttk.Button(btns, text="Delete", style="Danger.TButton", command=self.delete).pack(side="left", fill="x", expand=True)
         self.refresh()
 
     def refresh(self) -> None:
-        self.table.setRowCount(0)
+        self.table.delete(*self.table.get_children())
         for code in sorted(self.cfg.parts):
             pn = self.cfg.parts[code]
-            r = self.table.rowCount()
-            self.table.insertRow(r)
-            for c, v in enumerate([code, ", ".join(pn.pattern), pn.description]):
-                self.table.setItem(r, c, QTableWidgetItem(v))
+            self.table.insert("", "end", iid=code, values=(code, ", ".join(pn.pattern), pn.description))
 
     def _on_select(self) -> None:
-        rows = self.table.selectionModel().selectedRows()
-        if not rows:
-            return
-        pn = self.cfg.parts.get(self.table.item(rows[0].row(), 0).text())
+        sel = self.table.selection()
+        pn = self.cfg.parts.get(sel[0]) if sel else None
         if pn is None:
             return
-        self.code.setText(pn.code)
-        self.desc.setText(pn.description)
-        for cb, label in zip(self.row_combos, pn.pattern):
-            cb.setCurrentText(label)
+        self.code_var.set(pn.code)
+        self.desc_var.set(pn.description)
+        for var, label in zip(self.row_vars, pn.pattern):
+            var.set(label)
 
     def new(self) -> None:
-        self.table.clearSelection()
-        self.code.clear()
-        self.desc.clear()
-        for cb in self.row_combos:
-            cb.setCurrentIndex(0)
-        self.code.setFocus()
+        self.table.selection_remove(*self.table.selection())
+        self.code_var.set("")
+        self.desc_var.set("")
+        for var in self.row_vars:
+            var.set(EXPECTED_LABELS[0])
+        self.code.focus_set()
 
     def save(self) -> None:
-        code = self.code.text().strip()
-        pn = PartNumber(code, [cb.currentText() for cb in self.row_combos], self.desc.text().strip())
+        code = self.code_var.get().strip()
+        pn = PartNumber(code, [v.get() for v in self.row_vars], self.desc_var.get().strip())
         try:
             pn.validate(self.cfg.station.rows)
         except ValueError as exc:
             error_box(self, str(exc))
             return
-        if code in self.cfg.parts and self.cfg.parts[code].pattern != pn.pattern:
-            if not confirm(self, f"Change the master pattern of {code}?"):
-                return
         old = self.cfg.parts.get(code)
+        if old is not None and old.pattern != pn.pattern and not confirm(self, f"Change the master pattern of {code}?"):
+            return
         self.cfg.parts[code] = pn
         save_config(self.cfg)
-        self.station.store.log_event(
-            "part_saved", "", f"{code}: {old.pattern if old else 'new'} -> {pn.pattern}"
-        )
+        self.station.store.log_event("part_saved", "", f"{code}: {old.pattern if old else 'new'} -> {pn.pattern}")
         self.refresh()
-        self.config_changed.emit()
+        self.table.selection_set(code)
+        self.on_config_changed()
 
     def delete(self) -> None:
-        code = self.code.text().strip()
+        code = self.code_var.get().strip()
         if code not in self.cfg.parts:
             return
         if self.station.lock.locked and self.station.lock.state.part_number == code:
@@ -135,4 +110,4 @@ class PartsScreen(QWidget):
         self.station.store.log_event("part_deleted", "", code)
         self.new()
         self.refresh()
-        self.config_changed.emit()
+        self.on_config_changed()

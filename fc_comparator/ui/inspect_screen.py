@@ -3,188 +3,153 @@
 from __future__ import annotations
 
 import logging
+import tkinter as tk
 from datetime import date
-
-from PySide6.QtCore import Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (
-    QAbstractItemView,
-    QComboBox,
-    QFileDialog,
-    QFormLayout,
-    QHBoxLayout,
-    QHeaderView,
-    QLabel,
-    QLineEdit,
-    QTableWidget,
-    QTableWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
+from tkinter import filedialog, ttk
 
 from ..barcode import parse_scan
 from ..capture import FileSource
 from ..capture.sources import read_image
-from ..pipeline import Station, StationResult
-from .widgets import (
-    IDLE_COLOR,
-    NG_COLOR,
-    OK_COLOR,
-    WARN_COLOR,
-    Banner,
-    ImageView,
-    PinDialog,
-    Task,
-    big_button,
-    error_box,
-)
+from ..pipeline import Station, StationLocked, StationResult
+from .widgets import IDLE_COLOR, NG_COLOR, OK_COLOR, WARN_COLOR, Banner, Dispatcher, ImageView, PinDialog, error_box
 
 log = logging.getLogger(__name__)
 
 
-class InspectScreen(QWidget):
-    trigger_requested = Signal()  # thread-safe entry point (GPIO pedal callback runs on another thread)
-    lock_changed = Signal()  # lock listeners run on the inspection worker thread
-
-    def __init__(self, station: Station, parent=None):
-        super().__init__(parent)
+class InspectScreen(ttk.Frame):
+    def __init__(self, master, station: Station, dispatcher: Dispatcher, app=None):
+        super().__init__(master)
         self.station = station
         self.cfg = station.cfg
-        self._busy = False
+        self.dispatcher = dispatcher
+        self.app = app  # MainWindow (navigation locking)
+        self.busy = False
         self._showing_result = False
-        self._tasks: set[Task] = set()
         self._file_image = None  # image loaded via "Load image" while in camera mode
 
         # -- left: image ------------------------------------------------------
-        self.view = ImageView(placeholder="Waiting for camera...")
-        self.live_btn = big_button("Live view")
-        self.live_btn.clicked.connect(self.show_live)
-        self.load_btn = big_button("Load image...")
-        self.load_btn.clicked.connect(self.load_image)
-        img_btns = QHBoxLayout()
-        img_btns.addWidget(self.live_btn)
-        img_btns.addWidget(self.load_btn)
-        left = QVBoxLayout()
-        left.addWidget(self.view, 1)
-        left.addLayout(img_btns)
+        left = ttk.Frame(self)
+        left.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        self.view = ImageView(left, placeholder="Waiting for camera...")
+        self.view.pack(fill="both", expand=True)
+        btns = ttk.Frame(left)
+        btns.pack(fill="x", pady=(6, 0))
+        ttk.Button(btns, text="Live view", command=self.show_live).pack(side="left", fill="x", expand=True, padx=(0, 4))
+        ttk.Button(btns, text="Load image...", command=self.load_image).pack(side="left", fill="x", expand=True)
 
         # -- right: controls ----------------------------------------------------
-        self.banner = Banner()
-        self.scan = QLineEdit()
-        self.scan.setPlaceholderText("Scan barcode (part number or OP:operator)")
-        self.scan.returnPressed.connect(self._on_scan)
-        self.part = QComboBox()
-        self.part.currentTextChanged.connect(self._on_part_changed)
-        self.operator = QLineEdit()
-        self.operator.setPlaceholderText("Operator ID")
-        self.pattern_lbl = QLabel()
-        self.pattern_lbl.setWordWrap(True)
-        form = QFormLayout()
-        form.addRow("Scan", self.scan)
-        form.addRow("Part number", self.part)
-        form.addRow("Master pattern", self.pattern_lbl)
-        form.addRow("Operator", self.operator)
+        right = ttk.Frame(self, width=560)
+        right.pack(side="right", fill="y")
+        right.pack_propagate(False)
+        self.banner = Banner(right)
+        self.banner.pack(fill="x")
 
-        self.inspect_btn = big_button(f"INSPECT  [{self.cfg.trigger.key}]", "primary")
-        self.inspect_btn.clicked.connect(self.inspect)
-        self.ack_btn = big_button("Supervisor acknowledge (PIN)", "danger")
-        self.ack_btn.clicked.connect(self.acknowledge)
-        self.ack_btn.hide()
+        form = ttk.Frame(right)
+        form.pack(fill="x", pady=8)
+        form.columnconfigure(1, weight=1)
+        self.scan_var = tk.StringVar()
+        self.scan = ttk.Entry(form, textvariable=self.scan_var)
+        self.scan.bind("<Return>", lambda _e: self.on_scan())
+        self.part_var = tk.StringVar()
+        self.part = ttk.Combobox(form, textvariable=self.part_var, state="readonly")
+        self.part.bind("<<ComboboxSelected>>", lambda _e: self._on_part_changed())
+        self.pattern_lbl = ttk.Label(form, wraplength=380, justify="left")
+        self.operator_var = tk.StringVar()
+        self.operator = ttk.Entry(form, textvariable=self.operator_var)
+        for r, (label, w) in enumerate(
+            (("Scan", self.scan), ("Part number", self.part), ("Master pattern", self.pattern_lbl), ("Operator", self.operator))
+        ):
+            ttk.Label(form, text=label).grid(row=r, column=0, sticky="w", padx=(0, 10), pady=4)
+            w.grid(row=r, column=1, sticky="ew", pady=4)
 
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Cable", "Row", "Expected", "Found", "Conf."])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.verticalHeader().hide()
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self.stats_lbl = QLabel()
-        self.timing_lbl = QLabel()
-        self.timing_lbl.setStyleSheet("color: #718096;")
+        self.inspect_btn = ttk.Button(right, style="Primary.TButton", command=self.inspect)
+        self.inspect_btn.pack(fill="x", pady=(4, 6))
+        ack_slot = ttk.Frame(right)  # keeps the ack button's place in the layout while hidden
+        ack_slot.pack(fill="x")
+        self.ack_btn = ttk.Button(ack_slot, text="Supervisor acknowledge (PIN)", style="Danger.TButton", command=self.acknowledge)
 
-        right = QVBoxLayout()
-        right.addWidget(self.banner)
-        right.addLayout(form)
-        right.addWidget(self.inspect_btn)
-        right.addWidget(self.ack_btn)
-        right.addWidget(QLabel("Mismatches"))
-        right.addWidget(self.table, 1)
-        right.addWidget(self.stats_lbl)
-        right.addWidget(self.timing_lbl)
-        right_w = QWidget()
-        right_w.setLayout(right)
-        right_w.setMaximumWidth(620)
+        ttk.Label(right, text="Mismatches").pack(anchor="w")
+        cols = ("cable", "row", "expected", "found", "conf")
+        self.table = ttk.Treeview(right, columns=cols, show="headings", height=6, selectmode="none")
+        for c, w in zip(cols, (70, 60, 130, 130, 80)):
+            self.table.heading(c, text=c.capitalize() if c != "conf" else "Conf.")
+            self.table.column(c, width=w, anchor="center")
+        self.table.tag_configure("ng", foreground=NG_COLOR)
+        self.table.pack(fill="both", expand=True)
+        self.stats_lbl = ttk.Label(right)
+        self.stats_lbl.pack(anchor="w", pady=(6, 0))
+        self.timing_lbl = ttk.Label(right, style="Muted.TLabel", wraplength=540, justify="left")
+        self.timing_lbl.pack(anchor="w")
 
-        lay = QHBoxLayout(self)
-        lay.addLayout(left, 1)
-        lay.addWidget(right_w)
-
-        self.trigger_requested.connect(self.inspect)
-        self.lock_changed.connect(self._update_lock_ui)
-        self.station.lock.subscribe(lambda _state: self.lock_changed.emit())
-
-        self.preview = QTimer(self)
-        self.preview.timeout.connect(self._refresh_preview)
-        self.preview.start(max(30, int(1000 / max(1, self.cfg.ui.preview_fps))))
+        self.station.lock.subscribe(lambda _s: self.dispatcher.call(self.update_lock_ui))
+        self._preview_ms = max(30, int(1000 / max(1, self.cfg.ui.preview_fps)))
+        self._preview_job = self.after(self._preview_ms, self._preview_tick)
 
         self.refresh_parts()
-        self._update_lock_ui()
+        self.update_lock_ui()
         self._update_stats()
 
     # -- parts / scanning ------------------------------------------------------
     def refresh_parts(self) -> None:
-        current = self.part.currentText()
-        self.part.blockSignals(True)
-        self.part.clear()
-        self.part.addItems(sorted(self.cfg.parts))
+        current = self.part_var.get()
+        codes = sorted(self.cfg.parts)
+        self.part.configure(values=codes)
         if current in self.cfg.parts:
-            self.part.setCurrentText(current)
-        self.part.blockSignals(False)
-        self._on_part_changed(self.part.currentText())
+            self.part_var.set(current)
+        elif codes:
+            self.part_var.set(codes[0])
+        else:
+            self.part_var.set("")
+        self._on_part_changed()
 
-    def _on_part_changed(self, code: str) -> None:
-        pn = self.cfg.parts.get(code)
+    def _on_part_changed(self) -> None:
+        pn = self.cfg.parts.get(self.part_var.get())
         if pn is None:
-            self.pattern_lbl.setText("-" if self.cfg.compare.mode != "cross" else "(cross-cable mode)")
+            self.pattern_lbl.configure(text="-" if self.cfg.compare.mode != "cross" else "(cross-cable mode)")
             return
         rows = "  ".join(f"R{i + 1}: {p}" for i, p in enumerate(pn.pattern))
-        self.pattern_lbl.setText(f"{rows}\n{pn.description}" if pn.description else rows)
+        self.pattern_lbl.configure(text=f"{rows}\n{pn.description}" if pn.description else rows)
 
-    def _on_scan(self) -> None:
-        text = self.scan.text()
-        self.scan.clear()
+    def on_scan(self) -> None:
+        text = self.scan_var.get()
+        self.scan_var.set("")
         s = parse_scan(text, self.cfg.barcode, set(self.cfg.parts))
         if s.kind == "operator":
-            self.operator.setText(s.value)
+            self.operator_var.set(s.value)
         elif s.kind == "part":
             if self.station.lock.locked and s.value != self.station.lock.state.part_number:
                 self.banner.show_state("LOCKED", NG_COLOR, "Resolve the NG before changing part")
                 return
-            self.part.setCurrentText(s.value)
+            self.part_var.set(s.value)
+            self._on_part_changed()
             self.banner.show_state("READY", IDLE_COLOR, s.value)
         else:
             self.banner.show_state("UNKNOWN", WARN_COLOR, f"Barcode not recognised: {text.strip()[:30]}")
 
     def focus_scan(self) -> None:
-        self.scan.setFocus()
+        self.scan.focus_set()
 
     # -- preview -------------------------------------------------------------
-    def _refresh_preview(self) -> None:
-        if self._showing_result or not self.isVisible():
-            return
-        frame = self._file_image if self._file_image is not None else self.station.source.latest()
-        if frame is not None:
-            self.view.set_image(frame)
-        err = getattr(self.station.source, "error", "")
-        if err:
-            self.timing_lbl.setText(f"Camera: {err}")
+    def _preview_tick(self) -> None:
+        try:
+            if not self._showing_result and self.winfo_ismapped():
+                frame = self._file_image if self._file_image is not None else self.station.source.latest()
+                if frame is not None:
+                    self.view.set_image(frame)
+                err = getattr(self.station.source, "error", "")
+                if err:
+                    self.timing_lbl.configure(text=f"Camera: {err}")
+        finally:
+            self._preview_job = self.after(self._preview_ms, self._preview_tick)
 
     def show_live(self) -> None:
         self._showing_result = False
         self._file_image = None
-        self._refresh_preview()
 
     def load_image(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Load board image", "", "Images (*.png *.jpg *.jpeg *.bmp *.tif)")
+        path = filedialog.askopenfilename(
+            parent=self, title="Load board image", filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.tif"), ("All", "*.*")]
+        )
         if not path:
             return
         try:
@@ -201,9 +166,9 @@ class InspectScreen(QWidget):
 
     # -- inspection ---------------------------------------------------------
     def inspect(self) -> None:
-        if self._busy:
+        if self.busy:
             return
-        part = self.part.currentText()
+        part = self.part_var.get()
         if not part and self.cfg.compare.mode != "cross":
             self.banner.show_state("NO PART", WARN_COLOR, "Scan or select a part number")
             return
@@ -211,89 +176,78 @@ class InspectScreen(QWidget):
         if not ok:
             self.banner.show_state("LOCKED", NG_COLOR, why)
             return
-        self._busy = True
-        self.inspect_btn.setEnabled(False)
+        self.busy = True
+        self.inspect_btn.state(["disabled"])
         self.banner.show_state("INSPECTING...", IDLE_COLOR)
-        image = self._file_image
-        operator = self.operator.text().strip()
-
-        task = Task(lambda: self.station.inspect(part, operator, image=image), self._on_result, self._on_error)
-        self._tasks.add(task)
-        task.signals.done.connect(lambda _r, t=task: self._tasks.discard(t))
-        task.signals.failed.connect(lambda _e, t=task: self._tasks.discard(t))
-        QThreadPool.globalInstance().start(task)
+        image, operator = self._file_image, self.operator_var.get().strip()
+        self.dispatcher.run_task(lambda: self.station.inspect(part, operator, image=image), self._on_result, self._on_error)
 
     def _on_result(self, res: StationResult) -> None:
-        self._busy = False
-        self.inspect_btn.setEnabled(True)
+        self.busy = False
+        self.inspect_btn.state(["!disabled"])
         self._file_image = None
         rep = res.report
         self._showing_result = True
         self.view.set_image(res.annotated)
         if rep.ok:
-            self.banner.show_state("OK", OK_COLOR, f"{rep.part_number}  all {len(rep.positions)} positions correct")
+            self.banner.show_state("OK", OK_COLOR, f"{rep.part_number}: all {len(rep.positions)} positions correct")
         else:
-            detail = rep.error or f"{len(rep.mismatches)} position(s) wrong"
-            self.banner.show_state("NG", NG_COLOR, detail)
-        self.table.setRowCount(0)
+            self.banner.show_state("NG", NG_COLOR, rep.error or f"{len(rep.mismatches)} position(s) wrong")
+        self.table.delete(*self.table.get_children())
         for p in rep.mismatches:
-            r = self.table.rowCount()
-            self.table.insertRow(r)
-            for c, v in enumerate([p.cable, p.row, p.expected, p.found, f"{p.confidence:.0%}"]):
-                item = QTableWidgetItem(str(v))
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setForeground(QColor(NG_COLOR))
-                item.setToolTip(p.reason)
-                self.table.setItem(r, c, item)
+            self.table.insert("", "end", values=(p.cable, p.row, p.expected, p.found, f"{p.confidence:.0%}"), tags=("ng",))
         alert_err = self.station.alert.last_error
-        self.timing_lbl.setText(
-            f"#{res.inspection_id}  inspection {rep.duration_ms:.0f} ms, alert after {res.alert_latency_ms:.0f} ms, "
-            f"{rep.classifier}, {rep.alignment.message}" + (f"  ALERT FAULT: {alert_err}" if alert_err else "")
+        self.timing_lbl.configure(
+            text=f"#{res.inspection_id}  inspection {rep.duration_ms:.0f} ms, alert after {res.alert_latency_ms:.0f} ms, "
+            f"{rep.classifier}, {rep.alignment.message}" + (f"\nALERT FAULT: {alert_err}" if alert_err else "")
         )
-        self._update_lock_ui()
+        self.update_lock_ui()
         self._update_stats()
         self.focus_scan()
 
-    def _on_error(self, message: str) -> None:
-        self._busy = False
-        self.inspect_btn.setEnabled(True)
-        if "StationLocked" in message:
-            self.banner.show_state("LOCKED", NG_COLOR, message.split(":", 1)[-1].strip())
+    def _on_error(self, exc: BaseException) -> None:
+        self.busy = False
+        self.inspect_btn.state(["!disabled"])
+        if isinstance(exc, StationLocked):
+            self.banner.show_state("LOCKED", NG_COLOR, str(exc))
             return
-        log.error("Inspection failed: %s", message)
+        log.error("Inspection failed: %s", exc)
         self.station.alert.ng()  # a failed inspection is never silently OK
-        self.banner.show_state("ERROR", NG_COLOR, message[:80])
+        self.banner.show_state("ERROR", NG_COLOR, str(exc)[:80])
 
     # -- lock ------------------------------------------------------------------
-    def _update_lock_ui(self) -> None:
+    def update_lock_ui(self) -> None:
         st = self.station.lock.state
-        self.ack_btn.setVisible(st.locked)
-        self.part.setEnabled(not st.locked)
+        key = self.cfg.trigger.key
         if st.locked:
-            self.inspect_btn.setText(f"RE-INSPECT {st.part_number}  [{self.cfg.trigger.key}]")
+            self.ack_btn.pack(fill="x", pady=(0, 6))
+            self.part.state(["disabled"])
+            self.inspect_btn.configure(text=f"RE-INSPECT {st.part_number}  [{key}]")
         else:
-            self.inspect_btn.setText(f"INSPECT  [{self.cfg.trigger.key}]")
-        win = self.window()
-        if hasattr(win, "set_navigation_locked"):
-            win.set_navigation_locked(st.locked)
+            self.ack_btn.pack_forget()
+            self.part.state(["!disabled", "readonly"])
+            self.inspect_btn.configure(text=f"INSPECT  [{key}]")
+        if self.app is not None:
+            self.app.set_navigation_locked(st.locked)
 
     def acknowledge(self) -> None:
         pin = PinDialog.ask(self, "Supervisor PIN", numeric_only=True)
         if pin is None:
             return
-        supervisor = self.operator.text().strip()
-        if self.station.acknowledge(pin, supervisor):
+        if self.station.acknowledge(pin, self.operator_var.get().strip()):
             self.banner.show_state("ACKNOWLEDGED", WARN_COLOR, "Station unlocked by supervisor")
         else:
             self.banner.show_state("WRONG PIN", NG_COLOR, "Station remains locked")
-        self._update_lock_ui()
+        self.update_lock_ui()
 
     def _update_stats(self) -> None:
         try:
             rep = self.station.store.daily_report(date.today())
         except Exception:
             return
-        self.stats_lbl.setText(f"Today: {rep.total} inspected, {rep.ok} OK, {rep.ng} NG ({rep.ng_rate:.1%})")
+        self.stats_lbl.configure(text=f"Today: {rep.total} inspected, {rep.ok} OK, {rep.ng} NG ({rep.ng_rate:.1%})")
 
     def stop(self) -> None:
-        self.preview.stop()
+        if self._preview_job is not None:
+            self.after_cancel(self._preview_job)
+            self._preview_job = None

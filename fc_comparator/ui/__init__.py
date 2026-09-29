@@ -1,1 +1,1 @@
-"""PySide6 touchscreen UI."""
+"""tkinter touchscreen UI."""
