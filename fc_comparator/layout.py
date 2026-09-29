@@ -205,14 +205,32 @@ def _best_translation(P: np.ndarray, D: np.ndarray, tol: float, max_shift: float
     return best
 
 
-def match_layout(detections: list[Box], layout: Layout, cfg: LayoutConfig, image_size: tuple[int, int] | None = None) -> Placement:
+def match_layout(
+    detections: list[Box],
+    layout: Layout,
+    cfg: LayoutConfig,
+    image_size: tuple[int, int] | None = None,
+    expected_labels: dict[tuple[int, int], str] | None = None,
+    taxonomy: Taxonomy | None = None,
+) -> Placement:
+    """Fit ``layout`` onto ``detections``.
+
+    With ``expected_labels`` (+ ``taxonomy``) the geometry is refined only from
+    *anchor* clips - detections whose class agrees with the master at that
+    position - so wrong clips (a different part on one cable) cannot bias it.
+    """
     keys = sorted(layout.positions)
     P = np.array([layout.positions[k] for k in keys], dtype=float)
     size = float(np.mean(layout.clip_size))
     if image_size and layout.image_size[0] > 0:
         s = image_size[0] / layout.image_size[0]  # different camera resolution than the master
         P, size = P * s, size * s
+    # A wrong clip type can sit ~half a clip away from the master clip's centre, so the
+    # tolerance is about one clip size - but never so large that neighbours could be confused.
     tol = cfg.match_tolerance * size
+    if len(P) > 1:
+        d = np.linalg.norm(P[:, None, :] - P[None, :, :], axis=2)
+        tol = min(tol, 0.45 * float(d[d > 0].min()))
     info = PlacementInfo(expected=len(keys))
     if not detections:
         info.ok, info.message = False, "no clips detected"
@@ -224,10 +242,23 @@ def match_layout(detections: list[Box], layout: Layout, cfg: LayoutConfig, image
     pairs = _assign(Q, D, tol)
     rotation, scale = 0.0, 1.0
 
-    if len(pairs) >= 3:
-        src = np.array([P[i] for i, _ in pairs], dtype=np.float32)
-        dst = np.array([D[j] for _, j in pairs], dtype=np.float32)
-        m, _ = cv2.estimateAffinePartial2D(src, dst, method=cv2.LMEDS)
+    def anchors(prs):
+        if expected_labels is None or taxonomy is None:
+            return prs
+        good = [(i, j) for i, j in prs if taxonomy.matches(expected_labels.get(keys[i], ""), detections[j].label)]
+        return good if len(good) >= 3 else prs
+
+    if pairs:  # robust translation from the anchor clips
+        a = anchors(pairs)
+        t = np.median(np.array([D[j] - P[i] for i, j in a]), axis=0)
+        Q = P + t
+        pairs = _assign(Q, D, tol)
+
+    a = anchors(pairs)
+    if len(a) >= 3:
+        src = np.array([P[i] for i, _ in a], dtype=np.float32)
+        dst = np.array([D[j] for _, j in a], dtype=np.float32)
+        m, _ = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=max(2.0, tol / 2))
         if m is not None:
             s_fit = math.hypot(m[0, 0], m[1, 0])
             r_fit = math.degrees(math.atan2(m[1, 0], m[0, 0]))

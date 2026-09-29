@@ -1,17 +1,6 @@
-station:
-  name: Station-1
-camera:
-  source: file
-  index: 0
-  backend: auto
-  width: 1920
-  height: 1080
-  fps: 30
-  autofocus: false
-  focus: null
-  exposure: null
-  warmup_frames: 5
-  file_path: ../samples/boards/board_P001_ok.jpg
+station: {name: Station-1}
+camera: {source: file, index: 0, backend: auto, width: 1920, height: 1080, fps: 30, autofocus: false, focus: null, exposure: null,
+  warmup_frames: 5, file_path: ../samples/boards/board_P001_ok.jpg}
 taxonomy:
   classes: [round, fork_left, fork_right, small]
   groups:
@@ -24,14 +13,12 @@ detector:
   confidence_threshold: 0.6
   imgsz: 960
   device: cpu
-  template: {scale: 0.5, max_per_class: 10, min_score: 0.55, temperature: 0.04}
-layout: {match_tolerance: 0.6, max_shift_px: 200.0, max_rotation_deg: 8.0, min_matched_fraction: 0.5}
-annotations:
-  dir: ../samples/annotations
-training: {base_model: yolo11n.pt, epochs: 60, imgsz: 960, batch: 8, val_split: 0.2, mirror: true, patience: 20,
-  workdir: ../runs/detector}
-compare:
-  mode: master
+  min_model_accuracy: 0.95
+  template: {scale: 0.35, max_per_class: 8, max_negatives: 48, min_score: 0.7, temperature: 0.04}
+layout: {match_tolerance: 1.0, max_shift_px: 200.0, max_rotation_deg: 8.0, min_matched_fraction: 0.5}
+annotations: {dir: ../samples/annotations}
+training: {base_model: yolo11n.pt, epochs: 100, imgsz: 960, batch: 8, val_split: 0.2, mirror: true, patience: 30, workdir: ../runs/detector}
+compare: {mode: master}
 alert:
   backend: console
   buzzer_mode: pulse
@@ -40,32 +27,91 @@ alert:
   gpio: {green_pin: 17, red_pin: 27, buzzer_pin: 22, active_high: true}
   usb_relay: {port: COM3, baudrate: 9600, green_channel: 1, red_channel: 2, buzzer_channel: 3}
   modbus: {host: 192.168.0.10, port: 502, unit_id: 1, green_coil: 0, red_coil: 1, buzzer_coil: 2, timeout: 0.5}
-security:
-  setup_password: pbkdf2_sha256$200000$f7f2012437381db47d00e79580e16017$c92040281e2d248d78a0c9371b34ffbf396aef1a23083f000de018627f6f6f21
-  supervisor_pin: pbkdf2_sha256$200000$c32465c0d7d720e41950572856528d15$40fbbf25cb42ce6df878f046b78d277874913140f99a0328d788452966c95f90
-  lock_on_ng: true
-storage:
-  database: ../data/inspections.db
-  image_dir: ../data/images
-  save_ok_every_n: 20
-  save_raw_images: false
-barcode:
-  part_pattern: ^(?P<part>[A-Za-z0-9\-_]+)$
-  operator_prefix: 'OP:'
-trigger:
-  key: F9
-  gpio_pin: null
-ui:
-  fullscreen: false
-  preview_fps: 15
-  appearance: light
-  scale: 1.0
+security: {setup_password: pbkdf2_sha256$200000$f7f2012437381db47d00e79580e16017$c92040281e2d248d78a0c9371b34ffbf396aef1a23083f000de018627f6f6f21,
+  supervisor_pin: pbkdf2_sha256$200000$c32465c0d7d720e41950572856528d15$40fbbf25cb42ce6df878f046b78d277874913140f99a0328d788452966c95f90,
+  lock_on_ng: true}
+storage: {database: ../data/inspections.db, image_dir: ../data/images, save_ok_every_n: 20, save_raw_images: false}
+barcode: {part_pattern: '^(?P<part>[A-Za-z0-9\-_]+)$', operator_prefix: 'OP:'}
+trigger: {key: F9, gpio_pin: null}
+ui: {fullscreen: false, preview_fps: 15, appearance: light, scale: 1.0}
 parts:
   P001:
-    description: Harness A
+    description: Harness A (4 cables x 4 clips)
     cables: 4
     pattern: [round, fork_left, small, round]
+    master_image: 20260929-224910-596196
+    layout:
+      cables: 4
+      rows: 4
+      clip_size: [63.5, 63.5]
+      image_size: [1280, 960]
+      positions:
+      - [1, 1, 258.2, 302.0]
+      - [1, 2, 236.0, 471.1]
+      - [1, 3, 262.0, 637.0]
+      - [1, 4, 262.0, 812.6]
+      - [2, 1, 522.4, 298.4]
+      - [2, 2, 499.7, 468.9]
+      - [2, 3, 519.0, 639.2]
+      - [2, 4, 520.6, 808.6]
+      - [3, 1, 779.3, 300.9]
+      - [3, 2, 758.1, 467.9]
+      - [3, 3, 779.2, 638.9]
+      - [3, 4, 781.6, 812.9]
+      - [4, 1, 1039.7, 301.4]
+      - [4, 2, 1020.4, 467.4]
+      - [4, 3, 1039.5, 640.0]
+      - [4, 4, 1038.2, 809.0]
   P002:
-    description: Harness B
+    description: Harness B (4 cables x 4 clips)
     cables: 4
     pattern: [fork_right, fork_right, small, fork_right]
+    master_image: 20260929-224911-34a1a0
+    layout:
+      cables: 4
+      rows: 4
+      clip_size: [70.6, 76.3]
+      image_size: [1280, 960]
+      positions:
+      - [1, 1, 279.8, 300.6]
+      - [1, 2, 282.6, 467.4]
+      - [1, 3, 259.2, 638.0]
+      - [1, 4, 279.3, 811.7]
+      - [2, 1, 540.5, 302.9]
+      - [2, 2, 539.5, 470.5]
+      - [2, 3, 522.2, 635.8]
+      - [2, 4, 542.5, 809.6]
+      - [3, 1, 802.2, 298.3]
+      - [3, 2, 801.1, 469.8]
+      - [3, 3, 777.1, 635.8]
+      - [3, 4, 801.0, 807.3]
+      - [4, 1, 1058.8, 298.9]
+      - [4, 2, 1062.1, 469.8]
+      - [4, 3, 1038.2, 635.3]
+      - [4, 4, 1061.8, 808.1]
+  P003:
+    description: Harness C (3 cables x 5 clips)
+    cables: 3
+    pattern: [small, round, fork_left, round, small]
+    master_image: 20260929-224911-78f920
+    layout:
+      cables: 3
+      rows: 5
+      clip_size: [63.6, 63.6]
+      image_size: [1280, 960]
+      positions:
+      - [1, 1, 332.7, 256.2]
+      - [1, 2, 328.4, 396.0]
+      - [1, 3, 307.0, 530.2]
+      - [1, 4, 329.5, 664.7]
+      - [1, 5, 328.1, 798.9]
+      - [2, 1, 637.4, 260.6]
+      - [2, 2, 639.4, 393.3]
+      - [2, 3, 616.5, 527.8]
+      - [2, 4, 642.7, 662.8]
+      - [2, 5, 638.0, 799.6]
+      - [3, 1, 951.3, 258.2]
+      - [3, 2, 948.7, 393.3]
+      - [3, 3, 929.7, 531.5]
+      - [3, 4, 952.4, 665.0]
+      - [3, 5, 949.6, 796.6]

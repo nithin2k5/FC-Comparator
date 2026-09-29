@@ -11,6 +11,7 @@ from ..models import Box
 
 class Detector(ABC):
     name: str = "detector"
+    note: str = ""  # why this detector was chosen (shown in the UI)
 
     @property
     @abstractmethod

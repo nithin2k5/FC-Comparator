@@ -87,12 +87,13 @@ class TemplateDetector(Detector):
             twin = self.taxonomy.mirror_of(label)
             if twin != label and twin in self.taxonomy.classes:
                 templates.setdefault(twin, []).extend(cv2.flip(t, 1) for t in temps)
-        self.templates = {k: _dedupe(v) for k, v in templates.items()}
+        # Clip templates: drop only near-copies, natural variation must stay covered.
+        self.templates = {k: _dedupe(v, threshold=0.985, size=24) for k, v in templates.items()}
         self.negatives = _dedupe(self._sample_negatives(store, gray_of))
         self._mine_hard_negatives(store, gray_of)
         log.info("Template detector: %s + %d negatives", {k: len(v) for k, v in self.templates.items()}, len(self.negatives))
 
-    def _mine_hard_negatives(self, store: AnnotationStore, gray_of, rounds: int = 3, images: int = 8) -> None:
+    def _mine_hard_negatives(self, store: AnnotationStore, gray_of, rounds: int = 2, images: int = 8) -> None:
         """Run the detector on the marked images: whatever it finds that was not marked is not a clip.
 
         Relies on marked images being *completely* marked (every clip boxed).
@@ -122,7 +123,8 @@ class TemplateDetector(Detector):
         tw, th = int(round(crop.shape[1] * self.cfg.scale)), int(round(crop.shape[0] * self.cfg.scale))
         if tw < MIN_TEMPLATE_PX or th < MIN_TEMPLATE_PX:
             return None
-        return cv2.resize(crop, (tw, th), interpolation=cv2.INTER_AREA)
+        t = cv2.resize(crop, (tw, th), interpolation=cv2.INTER_AREA)
+        return t if t.std() >= MIN_PATCH_STD else None  # flat templates correlate with nothing (NaN)
 
     def _sample_negatives(self, store: AnnotationStore, gray_of) -> list[np.ndarray]:
         """Textured, clip-free patches of clip size from the marked images (a third of the budget;
@@ -176,21 +178,17 @@ class TemplateDetector(Detector):
         labels = self.labels
         groups = [self.templates[lbl] for lbl in labels] + [self.negatives]
         maps = np.full((len(groups), H, W), -1.0, np.float32)
-        tw_map = np.zeros((len(labels), H, W), np.float32)
-        th_map = np.zeros((len(labels), H, W), np.float32)
         for gi, temps in enumerate(groups):
             for t in temps:
                 th, tw = t.shape
                 if th > H or tw > W:
                     continue
-                r = np.clip(np.nan_to_num(cv2.matchTemplate(small, t, cv2.TM_CCOEFF_NORMED), nan=-1.0), -1, 1)
+                r = cv2.matchTemplate(small, t, cv2.TM_CCOEFF_NORMED)
                 oy, ox = th // 2, tw // 2  # response index -> template centre
                 view = maps[gi, oy:oy + r.shape[0], ox:ox + r.shape[1]]
-                better = r > view
-                view[better] = r[better]
-                if gi < len(labels):
-                    tw_map[gi, oy:oy + r.shape[0], ox:ox + r.shape[1]][better] = tw
-                    th_map[gi, oy:oy + r.shape[0], ox:ox + r.shape[1]][better] = th
+                np.maximum(view, r, out=view)
+        # box size per class: median template size (templates of one class are alike)
+        class_size = [np.median([t.shape for t in self.templates[lbl]], axis=0) for lbl in labels]
 
         clip_maps = maps[: len(labels)]
         best = clip_maps.max(axis=0)
@@ -213,7 +211,7 @@ class TemplateDetector(Detector):
         out = []
         for y, x in zip(ys, xs):
             li = int(best_cls[y, x])
-            tw, th = float(tw_map[li, y, x]), float(th_map[li, y, x])
+            th, tw = (float(v) for v in class_size[li])
             if len(kept_pts):
                 d = np.abs(kept_pts - (x, y))
                 if np.any((d[:, 0] < tw * 0.6) & (d[:, 1] < th * 0.6)):

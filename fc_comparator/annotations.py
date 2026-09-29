@@ -97,9 +97,9 @@ class AnnotationStore:
 
     # -- queries ---------------------------------------------------------------
     def records(self) -> list[ImageRecord]:
-        """All images, oldest first."""
+        """All images in upload order (kept in the index file, so results are reproducible)."""
         with self._lock:
-            return sorted(self._records.values(), key=lambda r: (r.added, r.id))
+            return list(self._records.values())
 
     def get(self, image_id: str) -> ImageRecord:
         with self._lock:

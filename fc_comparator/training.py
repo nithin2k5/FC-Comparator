@@ -311,7 +311,8 @@ def train_detector(
     result = evaluate(det, samples, cfg.taxonomy.classes, min_confidence=cfg.detector.confidence_threshold)
     say("Validation:\n" + result.as_text())
     report = target.with_name(target.stem + "_report.json")
-    report.write_text(json.dumps({**result.to_dict(), "epochs": state["epochs"], "imgsz": imgsz, "base": base,
+    report.write_text(json.dumps({**result.to_dict(), "confidence_threshold": cfg.detector.confidence_threshold,
+                                  "epochs": state["epochs"], "imgsz": imgsz, "base": base,
                                   "dataset": {"train": ds.train_images, "val": ds.val_images, "boxes": ds.boxes}},
                                  indent=2), encoding="utf-8")
     confusion_png(result, target.with_name(target.stem + "_confusion.png"))
@@ -326,11 +327,6 @@ def _total_loss(tloss) -> float:
         return float(tloss.sum())
     except Exception:
         return float("nan")
-
-
-def load_report(model_path: Path) -> dict | None:
-    p = Path(model_path).with_name(Path(model_path).stem + "_report.json")
-    return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None
 
 
 def samples_from_store(store: AnnotationStore, ids: list[str] | None = None) -> list[tuple[np.ndarray, list[Box]]]:

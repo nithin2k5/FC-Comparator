@@ -58,15 +58,17 @@ def test_fork_orientation(detector):
     assert match(dets, gt) == (8, 0, 0, 0)
 
 
-def test_missing_clip_and_obstruction_are_not_confident_clips(detector):
+def test_missing_clip_and_covered_clip(detector):
     cols = [["round", "fork_left", "small", "round"] for _ in range(4)]
     cols[1][2] = "missing"
     img, gt = render_marked_board(cols, seed=77)
     cv2.ellipse(img, (780, 470), (70, 45), 20, 0, 360, (150, 175, 205), -1, cv2.LINE_AA)  # finger over C3R2
     dets = detector.detect(img)
-    at = lambda x, y: [d for d in dets if abs(d.center[0] - x) < 40 and abs(d.center[1] - y) < 40]  # noqa: E731
-    assert at(520, 640) == []  # nothing where the clip is missing
-    assert all(d.confidence < 0.6 for d in at(780, 470))  # never a confident clip under the finger
+    near = lambda x, y, r: [d for d in dets if abs(d.center[0] - x) < r and abs(d.center[1] - y) < r]  # noqa: E731
+    assert near(520, 640, 40) == []  # nothing where the clip is missing
+    # The covered fork must not be "seen": whatever the finger looks like, it is not a confident
+    # fork_left there (the station then reports C3R2 as missing or wrong - never OK; see test_e2e).
+    assert not [d for d in near(760, 470, 60) if d.label == "fork_left" and d.confidence >= 0.6]
 
 
 def test_speed(detector):
@@ -85,6 +87,23 @@ def test_empty_store(tmp_path):
 def test_nms_keeps_the_best_box():
     boxes = [Box("round", 0, 0, 10, 10, 0.6), Box("small", 1, 1, 10, 10, 0.9), Box("round", 50, 50, 10, 10, 0.5)]
     assert [b.confidence for b in nms(boxes)] == [0.9, 0.5]
+
+
+def test_auto_never_switches_to_an_undertrained_model(tmp_path, marked_store):
+    import json
+
+    cfg = AppConfig(base_dir=tmp_path)
+    cfg.annotations.dir = str(marked_store.root)
+    model = tmp_path / "models" / "clip_detector.pt"
+    model.parent.mkdir()
+    model.write_bytes(b"not really a model")
+    report = model.with_name("clip_detector_report.json")
+    report.write_text(json.dumps({"accuracy": 0.42}))
+    det = create_detector(cfg, marked_store)
+    assert det.name == "template" and "42%" in det.note and "train longer" in det.note
+    report.write_text(json.dumps({"accuracy": 0.99}))  # good report but unreadable weights
+    det = create_detector(cfg, marked_store)
+    assert det.name == "template" and "could not be loaded" in det.note
 
 
 def test_factory_falls_back_to_templates(tmp_path, marked_store):

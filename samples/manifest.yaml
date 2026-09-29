@@ -2,46 +2,99 @@
 - image: boards/board_P001_ok.jpg
   part: P001
   expected_ng: []
+  extras: 0
+  error: false
   note: all correct
 - image: boards/board_P002_ok.jpg
   part: P002
   expected_ng: []
+  extras: 0
+  error: false
   note: all correct
+- image: boards/board_P003_ok.jpg
+  part: P003
+  expected_ng: []
+  extras: 0
+  error: false
+  note: all correct (other layout)
 - image: boards/board_P001_mixed.jpg
   part: P001
   expected_ng:
   - [3, 1]
+  - [3, 2]
   - [3, 4]
+  extras: 0
+  error: false
   note: cable 3 is a P002 harness
 - image: boards/board_P002_mixed.jpg
   part: P002
   expected_ng:
   - [1, 1]
+  - [1, 2]
   - [1, 4]
+  extras: 0
+  error: false
   note: cable 1 is a P001 harness
 - image: boards/board_P001_missing.jpg
   part: P001
   expected_ng:
   - [2, 3]
+  extras: 0
+  error: false
   note: clip missing on cable 2 row 3
 - image: boards/board_P001_shifted_ok.jpg
   part: P001
   expected_ng: []
+  extras: 0
+  error: false
   note: board shifted 20/-15 px, 1 deg
 - image: boards/board_P001_shifted_mixed.jpg
   part: P001
   expected_ng:
   - [2, 1]
+  - [2, 2]
   - [2, 4]
+  extras: 0
+  error: false
   note: shifted -18/20 px, cable 2 is P002
 - image: boards/board_P002_wrong_clip.jpg
   part: P002
   expected_ng:
   - [4, 2]
   - [3, 3]
+  extras: 0
+  error: false
   note: round instead of fork at C4R2, fork instead of small at C3R3
+- image: boards/board_P003_missing.jpg
+  part: P003
+  expected_ng:
+  - [2, 4]
+  extras: 0
+  error: false
+  note: other layout, shifted, clip missing on cable 2 row 4
+- image: boards/board_P003_orientation.jpg
+  part: P003
+  expected_ng:
+  - [1, 3]
+  extras: 0
+  error: false
+  note: fork faces the wrong way on cable 1 row 3
+- image: boards/board_P001_extra_clip.jpg
+  part: P001
+  expected_ng: []
+  extras: 1
+  error: false
+  note: an extra clip between the cables
+- image: boards/board_P003_as_P001.jpg
+  part: P001
+  expected_ng: []
+  extras: 0
+  error: true
+  note: a P003 board inspected as P001
 - image: boards/board_P001_obstructed.jpg
   part: P001
   expected_ng:
   - [3, 2]
-  note: unknown object at C3R2
+  extras: 0
+  error: false
+  note: a finger covers the clip at C3R2

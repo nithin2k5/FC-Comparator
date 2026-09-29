@@ -70,12 +70,14 @@ def render_marked_board(
     noise: float = 3.0,
     jitter: float = 3.0,
     geometry: Geometry = DEFAULT_GEOMETRY,
+    extra_clips: list[tuple[str, float, float]] = (),
 ) -> tuple[np.ndarray, list[Box]]:
     """Render a board and return (image, clip boxes).
 
     ``columns[cable-1][row-1]`` is the clip label at that position (``missing``
     draws nothing). ``shift``/``angle`` move the whole board (as if it was placed
     off-centre); ``jitter`` moves each clip a little, like real assembly.
+    ``extra_clips`` places additional clips (label, x, y) anywhere on the board.
     """
     rng = np.random.default_rng(seed)
     img = np.full((HEIGHT, WIDTH, 3), 246, np.uint8)
@@ -95,6 +97,9 @@ def render_marked_board(
             _draw_clip(img, label, (x + jx, y + jy), scale, rot, rng)
             if label != MISSING:
                 clips.append((label, x + jx, y + jy, scale))
+    for label, x, y in extra_clips:
+        _draw_clip(img, label, (x, y), 1.0, 0.0, rng)
+        clips.append((label, x, y, 1.0))
 
     # uneven lighting + sensor noise
     yy, xx = np.mgrid[0:HEIGHT, 0:WIDTH].astype(np.float32)

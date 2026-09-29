@@ -1,12 +1,12 @@
-"""Generate the synthetic sample set used by the demo config and the end-to-end test.
+"""Generate the synthetic sample set used by the demo config and the end-to-end tests.
 
-    python scripts/make_samples.py            # writes samples/
+    python scripts/make_samples.py
 
 Outputs
-  samples/reference.jpg          reference board for ROI teaching + alignment
-  samples/boards/*.jpg           test boards
-  samples/manifest.yaml          part number + expected NG positions per board
-  samples/dataset/<class>/*.jpg  teach crops (template set / YOLO training data)
+  samples/annotations/          uploaded + marked images (masters of P001-P003 and mixed boards)
+  samples/boards/*.jpg          test boards (not used for learning)
+  samples/manifest.yaml         part number and expected result per test board
+  config/config.yaml            parts P001-P003 with pattern + layout created from their master images
 """
 
 from __future__ import annotations
@@ -23,104 +23,113 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from fc_comparator.annotations import AnnotationStore  # noqa: E402
 from fc_comparator.capture.sources import write_image  # noqa: E402
-from fc_comparator.classify import crop_roi  # noqa: E402
-from fc_comparator.classify.dataset import save_crop  # noqa: E402
-from fc_comparator.synthetic import layout_rois, render_board  # noqa: E402
+from fc_comparator.config import load_config, save_config  # noqa: E402
+from fc_comparator.parts import part_from_marked_image  # noqa: E402
+from fc_comparator.synthetic import DEFAULT_GEOMETRY, Geometry, render_marked_board  # noqa: E402
 
-P001 = ["round", "fork_left", "small", "round"]  # master: round, fork, small, round (forks face left)
-P002 = ["fork_right", "fork_right", "small", "fork_right"]  # master: fork, fork, small, fork (forks face right)
+P001 = ["round", "fork_left", "small", "round"]
+P002 = ["fork_right", "fork_right", "small", "fork_right"]
+P003 = ["small", "round", "fork_left", "round", "small"]
+GEO3 = Geometry(cable_x0=330, cable_dx=310, row_y0=260, row_dy=135)  # a part with another layout
+PARTS = {
+    "P001": ("Harness A (4 cables x 4 clips)", P001, 4, DEFAULT_GEOMETRY),
+    "P002": ("Harness B (4 cables x 4 clips)", P002, 4, DEFAULT_GEOMETRY),
+    "P003": ("Harness C (3 cables x 5 clips)", P003, 3, GEO3),
+}
 
 
-def with_(cols, cable, row, label):
-    cols = [list(c) for c in cols]
-    cols[cable - 1][row - 1] = label
-    return cols
+def cols(pattern, cables=4, changes=()):
+    c = [list(pattern) for _ in range(cables)]
+    for cable, row, label in changes:
+        c[cable - 1][row - 1] = label
+    return c
 
 
-# name, part, columns, render kwargs, expected NG [(cable, row)], note
+# name, part, columns, geometry, render kwargs, expected NG [(cable,row)], extras, error expected, note
 BOARDS = [
-    ("board_P001_ok", "P001", [P001] * 4, {}, [], "all correct"),
-    ("board_P002_ok", "P002", [P002] * 4, {}, [], "all correct"),
-    ("board_P001_mixed", "P001", [P001, P001, P002, P001], {}, [(3, 1), (3, 4)], "cable 3 is a P002 harness"),
-    ("board_P002_mixed", "P002", [P001, P002, P002, P002], {}, [(1, 1), (1, 4)], "cable 1 is a P001 harness"),
-    ("board_P001_missing", "P001", with_([P001] * 4, 2, 3, "missing"), {}, [(2, 3)], "clip missing on cable 2 row 3"),
-    ("board_P001_shifted_ok", "P001", [P001] * 4, {"shift": (20, -15), "angle": 1.0}, [], "board shifted 20/-15 px, 1 deg"),
-    (
-        "board_P001_shifted_mixed",
-        "P001",
-        [P001, P002, P001, P001],
-        {"shift": (-18, 20)},
-        [(2, 1), (2, 4)],
-        "shifted -18/20 px, cable 2 is P002",
-    ),
-    (
-        "board_P002_wrong_clip",
-        "P002",
-        with_(with_([P002] * 4, 4, 2, "round"), 3, 3, "fork_right"),
-        {},
-        [(4, 2), (3, 3)],
-        "round instead of fork at C4R2, fork instead of small at C3R3",
-    ),
+    ("board_P001_ok", "P001", cols(P001), None, {}, [], 0, False, "all correct"),
+    ("board_P002_ok", "P002", cols(P002), None, {}, [], 0, False, "all correct"),
+    ("board_P003_ok", "P003", cols(P003, 3), GEO3, {}, [], 0, False, "all correct (other layout)"),
+    # P001's master has left-facing forks, P002's right-facing: row 2 differs by orientation too
+    ("board_P001_mixed", "P001", [P001, P001, P002, P001], None, {}, [(3, 1), (3, 2), (3, 4)], 0, False,
+     "cable 3 is a P002 harness"),
+    ("board_P002_mixed", "P002", [P001, P002, P002, P002], None, {}, [(1, 1), (1, 2), (1, 4)], 0, False,
+     "cable 1 is a P001 harness"),
+    ("board_P001_missing", "P001", cols(P001, changes=[(2, 3, "missing")]), None, {}, [(2, 3)], 0, False,
+     "clip missing on cable 2 row 3"),
+    ("board_P001_shifted_ok", "P001", cols(P001), None, {"shift": (20, -15), "angle": 1.0}, [], 0, False,
+     "board shifted 20/-15 px, 1 deg"),
+    ("board_P001_shifted_mixed", "P001", [P001, P002, P001, P001], None, {"shift": (-18, 20)},
+     [(2, 1), (2, 2), (2, 4)], 0, False, "shifted -18/20 px, cable 2 is P002"),
+    ("board_P002_wrong_clip", "P002", cols(P002, changes=[(4, 2, "round"), (3, 3, "fork_right")]), None, {},
+     [(4, 2), (3, 3)], 0, False, "round instead of fork at C4R2, fork instead of small at C3R3"),
+    ("board_P003_missing", "P003", cols(P003, 3, [(2, 4, "missing")]), GEO3, {"shift": (12, 18)}, [(2, 4)], 0, False,
+     "other layout, shifted, clip missing on cable 2 row 4"),
+    ("board_P003_orientation", "P003", cols(P003, 3, [(1, 3, "fork_right")]), GEO3, {}, [(1, 3)], 0, False,
+     "fork faces the wrong way on cable 1 row 3"),
+    ("board_P001_extra_clip", "P001", cols(P001), None, {"extra_clips": [("small", 650, 555)]}, [], 1, False,
+     "an extra clip between the cables"),
+    ("board_P003_as_P001", "P001", cols(P003, 3), GEO3, {}, None, 0, True, "a P003 board inspected as P001"),
 ]
-
-TEACH_SEEDS = range(500, 512)
-
-
-def teach_columns(rng):
-    labels = ["round", "fork_left", "fork_right", "small", "missing"]
-    return [[str(rng.choice(labels)) for _ in range(4)] for _ in range(4)]
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, default=ROOT / "samples")
+    ap.add_argument("--config", type=Path, default=ROOT / "config" / "config.yaml")
     args = ap.parse_args()
     out: Path = args.out
-    for sub in ("boards", "dataset"):
+    for sub in ("boards", "annotations", "dataset"):
         shutil.rmtree(out / sub, ignore_errors=True)
+    for old in ("reference.jpg", "manifest.yaml"):
+        (out / old).unlink(missing_ok=True)
 
-    write_image(out / "reference.jpg", render_board([P001] * 4, seed=1), quality=92)
+    # 1. "upload and mark" images: one good master board per part + mixed boards
+    store = AnnotationStore(out / "annotations")
+    masters = {}
+    for i, (code, (_desc, pattern, cables, geo)) in enumerate(PARTS.items()):
+        img, boxes = render_marked_board(cols(pattern, cables), seed=10 + i, geometry=geo)
+        image_id, _ = store.add_image(img, part=code, good=True, name=f"{code}_master.jpg")
+        store.set_boxes(image_id, boxes)
+        masters[code] = image_id
+    rng = np.random.default_rng(7)
+    labels = ["round", "fork_left", "fork_right", "small", "missing"]
+    for i in range(6):
+        geo = GEO3 if i == 5 else DEFAULT_GEOMETRY
+        n_cables, n_rows = (3, 5) if geo is GEO3 else (4, 4)
+        mix = [[str(rng.choice(labels)) for _ in range(n_rows)] for _ in range(n_cables)]
+        img, boxes = render_marked_board(mix, seed=40 + i, geometry=geo, shift=tuple(rng.uniform(-15, 15, 2)))
+        image_id, _ = store.add_image(img, name=f"mixed_{i + 1}.jpg")
+        store.set_boxes(image_id, boxes)
 
+    # 2. part numbers from the marked master images
+    cfg = load_config(args.config)
+    cfg.parts = {}
+    for code, (desc, *_rest) in PARTS.items():
+        part, _notes = part_from_marked_image(store, masters[code], code, cfg.taxonomy, desc)
+        cfg.parts[code] = part
+    save_config(cfg)
+
+    # 3. test boards + manifest
     manifest = []
-    for i, (name, part, cols, kw, expected, note) in enumerate(BOARDS):
-        img = render_board(cols, seed=100 + i, **kw)
+    for i, (name, part, columns, geo, kw, expected, extras, error, note) in enumerate(BOARDS):
+        img, _ = render_marked_board(columns, seed=100 + i, geometry=geo or DEFAULT_GEOMETRY, **kw)
         write_image(out / "boards" / f"{name}.jpg", img, quality=92)
-        manifest.append(
-            {"image": f"boards/{name}.jpg", "part": part, "expected_ng": [list(p) for p in expected], "note": note}
-        )
-
-    # An obstructed position (a gloved finger over the clip): must be "uncertain", never OK.
-    img = render_board([P001] * 4, seed=150)
-    cv2.ellipse(img, (790, 480), (70, 45), 20, 0, 360, (150, 175, 205), -1, cv2.LINE_AA)
-    cv2.ellipse(img, (790, 480), (70, 45), 20, 0, 360, (110, 130, 160), 3, cv2.LINE_AA)
+        manifest.append({"image": f"boards/{name}.jpg", "part": part, "expected_ng": [list(p) for p in expected or []],
+                         "extras": extras, "error": error, "note": note})
+    # a gloved finger over a clip: must never be OK
+    img, _ = render_marked_board(cols(P001), seed=150)
+    cv2.ellipse(img, (770, 475), (70, 45), 20, 0, 360, (150, 175, 205), -1, cv2.LINE_AA)
+    cv2.ellipse(img, (770, 475), (70, 45), 20, 0, 360, (110, 130, 160), 3, cv2.LINE_AA)
     write_image(out / "boards" / "board_P001_obstructed.jpg", img, quality=92)
-    manifest.append(
-        {"image": "boards/board_P001_obstructed.jpg", "part": "P001", "expected_ng": [[3, 2]], "note": "unknown object at C3R2"}
-    )
-
+    manifest.append({"image": "boards/board_P001_obstructed.jpg", "part": "P001", "expected_ng": [[3, 2]], "extras": 0,
+                     "error": False, "note": "a finger covers the clip at C3R2"})
     (out / "manifest.yaml").write_text(
         "# Expected results for the sample boards (used by tests/test_e2e.py)\n"
-        + yaml.safe_dump(manifest, sort_keys=False, default_flow_style=None),
-        encoding="utf-8",
-    )
-
-    # Teach dataset: labeled crops from boards with known content.
-    rng = np.random.default_rng(7)
-    rois = layout_rois()
-    n = 0
-    for seed in TEACH_SEEDS:
-        cols = teach_columns(rng)
-        img = render_board(cols, seed=seed, shift=tuple(rng.uniform(-2, 2, 2)))
-        for roi in rois:
-            label = cols[roi.cable - 1][roi.row - 1]
-            path = save_crop(out / "dataset", label, crop_roi(img, roi), f"s{seed}c{roi.cable}r{roi.row}")
-            # store as JPEG to keep the repository small
-            jpg = path.with_suffix(".jpg")
-            write_image(jpg, cv2.imread(str(path)), quality=92)
-            path.unlink()
-            n += 1
-    print(f"Wrote {len(manifest)} boards and {n} teach crops to {out}")
+        + yaml.safe_dump(manifest, sort_keys=False, default_flow_style=None), encoding="utf-8")
+    print(f"Wrote {len(store)} marked images, {len(manifest)} test boards; parts {list(cfg.parts)} saved to {cfg.path}")
 
 
 if __name__ == "__main__":

@@ -48,7 +48,7 @@ class TemplateDetectorConfig:
     scale: float = 0.35  # images are matched at this scale for speed
     max_per_class: int = 8  # templates per clip class (taken from marked boxes)
     max_negatives: int = 48  # "not a clip" patches sampled/mined automatically from the marked images
-    min_score: float = 0.6  # normalized correlation needed to report a clip
+    min_score: float = 0.7  # normalized correlation needed to report a clip
     temperature: float = 0.04  # softmax temperature for class confidence
 
 
@@ -60,12 +60,15 @@ class DetectorConfig:
     confidence_threshold: float = 0.6  # detections below this are "uncertain" (= NG)
     imgsz: int = 960
     device: str = "cpu"
+    # "auto" only switches to a trained model whose validation accuracy (at confidence_threshold)
+    # reaches this - an under-trained model never silently replaces working template matching.
+    min_model_accuracy: float = 0.95
     template: TemplateDetectorConfig = field(default_factory=TemplateDetectorConfig)
 
 
 @dataclass
 class LayoutConfig:
-    match_tolerance: float = 0.6  # max centre distance, as a fraction of the clip size
+    match_tolerance: float = 1.0  # max centre distance in clip sizes (capped at 45% of the closest position spacing)
     max_shift_px: float = 200.0  # largest board shift accepted relative to the master image
     max_rotation_deg: float = 8.0
     min_matched_fraction: float = 0.5  # fewer matches => "board does not match this part's layout"
@@ -79,12 +82,12 @@ class AnnotationConfig:
 @dataclass
 class TrainingConfig:
     base_model: str = "yolo11n.pt"
-    epochs: int = 60
+    epochs: int = 100
     imgsz: int = 960
     batch: int = 8
     val_split: float = 0.2
     mirror: bool = True  # add mirrored copies (swapping mirror classes such as fork_left/right)
-    patience: int = 20
+    patience: int = 30
     workdir: str = "runs/detector"
 
 
