@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+build/
+dist/
+
+# Runtime data (database, captured images, datasets, trained models)
+data/
+models/*.pt
+runs/
