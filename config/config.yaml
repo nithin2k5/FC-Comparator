@@ -1,133 +1,71 @@
-# FC-Comparator sample configuration.
-# Relative paths are resolved against this file's folder (config/).
-# The ROIs below match the synthetic sample board in samples/ (1280x960).
-# Re-draw them in Setup/Teach mode for your real camera.
-
 station:
   name: Station-1
-  cables: 4
-  rows: 4
-
 camera:
-  source: file            # camera | file
+  source: file
   index: 0
-  backend: auto           # auto | dshow | msmf | v4l2 | gstreamer
+  backend: auto
   width: 1920
   height: 1080
   fps: 30
   autofocus: false
-  focus: null             # fixed focus value when autofocus is off (driver specific)
-  exposure: null          # fixed exposure (driver specific), null = leave as is
+  focus: null
+  exposure: null
   warmup_frames: 5
   file_path: ../samples/boards/board_P001_ok.jpg
-
-reference_image: ../samples/reference.jpg
-
-rois:
-  - {cable: 1, row: 1, x: 200, y: 240, w: 120, h: 120}
-  - {cable: 1, row: 2, x: 200, y: 410, w: 120, h: 120}
-  - {cable: 1, row: 3, x: 200, y: 580, w: 120, h: 120}
-  - {cable: 1, row: 4, x: 200, y: 750, w: 120, h: 120}
-  - {cable: 2, row: 1, x: 460, y: 240, w: 120, h: 120}
-  - {cable: 2, row: 2, x: 460, y: 410, w: 120, h: 120}
-  - {cable: 2, row: 3, x: 460, y: 580, w: 120, h: 120}
-  - {cable: 2, row: 4, x: 460, y: 750, w: 120, h: 120}
-  - {cable: 3, row: 1, x: 720, y: 240, w: 120, h: 120}
-  - {cable: 3, row: 2, x: 720, y: 410, w: 120, h: 120}
-  - {cable: 3, row: 3, x: 720, y: 580, w: 120, h: 120}
-  - {cable: 3, row: 4, x: 720, y: 750, w: 120, h: 120}
-  - {cable: 4, row: 1, x: 980, y: 240, w: 120, h: 120}
-  - {cable: 4, row: 2, x: 980, y: 410, w: 120, h: 120}
-  - {cable: 4, row: 3, x: 980, y: 580, w: 120, h: 120}
-  - {cable: 4, row: 4, x: 980, y: 750, w: 120, h: 120}
-
-alignment:
-  enabled: true
-  max_features: 3000
-  work_width: 1000
-  ratio_test: 0.75
-  min_inliers: 25
-  ransac_threshold: 4.0
-  max_shift_px: 80.0
-  max_rotation_deg: 10.0
-  max_scale_change: 0.1
-  fail_as_ng: true        # alignment failure => NG instead of inspecting at wrong positions
-
-classifier:
-  backend: auto           # auto = YOLO if model_path exists, else template matching
-  model_path: ../models/clip_classifier.pt
-  dataset_dir: ../samples/dataset   # labeled crops, one subfolder per class (use ../data/dataset for production)
-  confidence_threshold: 0.6      # below this => "uncertain" => NG
-  roi_padding: 0.0
-  template:
-    size: 64
-    search_margin: 6
-    max_templates_per_class: 40
-    temperature: 0.04
-    min_match_score: 0.4
-    mirror_forks: true    # derive fork_right templates from fork_left (and vice versa)
-  yolo:
-    imgsz: 128
-    device: cpu
-
+taxonomy:
+  classes: [round, fork_left, fork_right, small]
+  groups:
+    fork: [fork_left, fork_right]
+  mirror: {fork_left: fork_right, fork_right: fork_left}
+detector:
+  backend: auto
+  model_path: ../models/clip_detector.pt
+  min_score: 0.25
+  confidence_threshold: 0.6
+  imgsz: 960
+  device: cpu
+  template: {scale: 0.5, max_per_class: 10, min_score: 0.55, temperature: 0.04}
+layout: {match_tolerance: 0.6, max_shift_px: 200.0, max_rotation_deg: 8.0, min_matched_fraction: 0.5}
+annotations:
+  dir: ../samples/annotations
+training: {base_model: yolo11n.pt, epochs: 60, imgsz: 960, batch: 8, val_split: 0.2, mirror: true, patience: 20,
+  workdir: ../runs/detector}
 compare:
-  mode: master            # master (A: vs master pattern) | cross (B: majority per row) | both
-
+  mode: master
 alert:
-  backend: console        # console | gpio | usb_relay | modbus | none
-  buzzer_mode: pulse      # pulse | until_ack
+  backend: console
+  buzzer_mode: pulse
   buzzer_seconds: 2.0
   ok_light_seconds: 0.0
-  gpio:
-    green_pin: 17
-    red_pin: 27
-    buzzer_pin: 22
-    active_high: true
-  usb_relay:
-    port: COM3
-    baudrate: 9600
-    green_channel: 1
-    red_channel: 2
-    buzzer_channel: 3
-  modbus:
-    host: 192.168.0.10
-    port: 502
-    unit_id: 1
-    green_coil: 0
-    red_coil: 1
-    buzzer_coil: 2
-    timeout: 0.5
-
+  gpio: {green_pin: 17, red_pin: 27, buzzer_pin: 22, active_high: true}
+  usb_relay: {port: COM3, baudrate: 9600, green_channel: 1, red_channel: 2, buzzer_channel: 3}
+  modbus: {host: 192.168.0.10, port: 502, unit_id: 1, green_coil: 0, red_coil: 1, buzzer_coil: 2, timeout: 0.5}
 security:
-  # Defaults: setup password "5678", supervisor PIN "1234" (numeric: the touch keypad has digits only).
-  # CHANGE THEM in Settings, or: python -m fc_comparator set-secret --setup / --pin
   setup_password: pbkdf2_sha256$200000$f7f2012437381db47d00e79580e16017$c92040281e2d248d78a0c9371b34ffbf396aef1a23083f000de018627f6f6f21
   supervisor_pin: pbkdf2_sha256$200000$c32465c0d7d720e41950572856528d15$40fbbf25cb42ce6df878f046b78d277874913140f99a0328d788452966c95f90
   lock_on_ng: true
-
 storage:
   database: ../data/inspections.db
   image_dir: ../data/images
-  save_ok_every_n: 20     # save every Nth OK image (0 = never); NG images are always saved
+  save_ok_every_n: 20
   save_raw_images: false
-
 barcode:
-  part_pattern: '^(?P<part>[A-Za-z0-9\-_]+)$'
-  operator_prefix: 'OP:'  # scanning "OP:1234" sets the operator ID
-
+  part_pattern: ^(?P<part>[A-Za-z0-9\-_]+)$
+  operator_prefix: 'OP:'
 trigger:
-  key: F9                 # foot pedal (keyboard-emulating) or keyboard key
-  gpio_pin: null          # BCM pin for a foot pedal on a Raspberry Pi
-
+  key: F9
+  gpio_pin: null
 ui:
   fullscreen: false
   preview_fps: 15
-  font_scale: 1.0
-
+  appearance: light
+  scale: 1.0
 parts:
   P001:
-    description: Harness A - round/fork/small/round
-    pattern: [round, fork, small, round]
+    description: Harness A
+    cables: 4
+    pattern: [round, fork_left, small, round]
   P002:
-    description: Harness B - fork/fork/small/fork
-    pattern: [fork, fork, small, fork]
+    description: Harness B
+    cables: 4
+    pattern: [fork_right, fork_right, small, fork_right]

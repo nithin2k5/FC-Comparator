@@ -12,25 +12,26 @@ from typing import Any
 
 from ..models import InspectionReport
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS inspections (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts            TEXT NOT NULL,
-    station       TEXT NOT NULL DEFAULT '',
-    operator_id   TEXT NOT NULL DEFAULT '',
-    part_number   TEXT NOT NULL,
-    mode          TEXT NOT NULL,
-    result        TEXT NOT NULL CHECK (result IN ('OK', 'NG')),
-    ng_count      INTEGER NOT NULL,
-    duration_ms   REAL NOT NULL,
-    classifier    TEXT NOT NULL DEFAULT '',
-    aligned       INTEGER NOT NULL DEFAULT 0,
-    align_shift   REAL NOT NULL DEFAULT 0,
-    align_message TEXT NOT NULL DEFAULT '',
-    error         TEXT NOT NULL DEFAULT '',
-    image_path    TEXT NOT NULL DEFAULT ''
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts                TEXT NOT NULL,
+    station           TEXT NOT NULL DEFAULT '',
+    operator_id       TEXT NOT NULL DEFAULT '',
+    part_number       TEXT NOT NULL,
+    mode              TEXT NOT NULL,
+    result            TEXT NOT NULL CHECK (result IN ('OK', 'NG')),
+    ng_count          INTEGER NOT NULL,
+    duration_ms       REAL NOT NULL,
+    detector          TEXT NOT NULL DEFAULT '',
+    placement_ok      INTEGER NOT NULL DEFAULT 0,
+    placement_shift   REAL NOT NULL DEFAULT 0,
+    placement_message TEXT NOT NULL DEFAULT '',
+    error             TEXT NOT NULL DEFAULT '',
+    image_path        TEXT NOT NULL DEFAULT '',
+    extras_count      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_inspections_ts ON inspections(ts);
 CREATE INDEX IF NOT EXISTS ix_inspections_part ON inspections(part_number, ts);
@@ -44,8 +45,17 @@ CREATE TABLE IF NOT EXISTS positions (
     confidence    REAL NOT NULL,
     ok            INTEGER NOT NULL,
     reason        TEXT NOT NULL DEFAULT '',
+    x REAL, y REAL, w REAL, h REAL,
     PRIMARY KEY (inspection_id, cable, row)
 );
+
+CREATE TABLE IF NOT EXISTS extras (
+    inspection_id INTEGER NOT NULL REFERENCES inspections(id) ON DELETE CASCADE,
+    label         TEXT NOT NULL,
+    confidence    REAL NOT NULL,
+    x REAL, y REAL, w REAL, h REAL
+);
+CREATE INDEX IF NOT EXISTS ix_extras_inspection ON extras(inspection_id);
 
 CREATE TABLE IF NOT EXISTS events (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,8 +114,33 @@ class InspectionStore:
             self._db.execute("PRAGMA foreign_keys = ON")
             self._db.execute("PRAGMA journal_mode = WAL")
             self._db.execute("PRAGMA synchronous = NORMAL")
+            version = self._db.execute("PRAGMA user_version").fetchone()[0]
+            if version == 1:
+                self._migrate_v1()
             self._db.executescript(SCHEMA)
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    def _migrate_v1(self) -> None:
+        """v1 (fixed-ROI classifier) -> v2 (detector + layout placement). History is kept."""
+        stmts = [
+            "ALTER TABLE inspections RENAME COLUMN classifier TO detector",
+            "ALTER TABLE inspections RENAME COLUMN aligned TO placement_ok",
+            "ALTER TABLE inspections RENAME COLUMN align_shift TO placement_shift",
+            "ALTER TABLE inspections RENAME COLUMN align_message TO placement_message",
+            "ALTER TABLE inspections ADD COLUMN extras_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE positions ADD COLUMN x REAL",
+            "ALTER TABLE positions ADD COLUMN y REAL",
+            "ALTER TABLE positions ADD COLUMN w REAL",
+            "ALTER TABLE positions ADD COLUMN h REAL",
+        ]
+        self._db.execute("BEGIN")
+        try:
+            for s in stmts:
+                self._db.execute(s)
+            self._db.execute("COMMIT")
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
 
     def close(self) -> None:
         with self._lock:
@@ -113,15 +148,16 @@ class InspectionStore:
 
     # -- writes ------------------------------------------------------------
     def save_report(self, report: InspectionReport, station: str = "", image_path: str = "") -> int:
-        a = report.alignment
+        pl = report.placement
         with self._lock:
             cur = self._db.cursor()
             cur.execute("BEGIN")
             try:
                 cur.execute(
                     """INSERT INTO inspections (ts, station, operator_id, part_number, mode, result, ng_count,
-                       duration_ms, classifier, aligned, align_shift, align_message, error, image_path)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       duration_ms, detector, placement_ok, placement_shift, placement_message, error, image_path,
+                       extras_count)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         report.timestamp.isoformat(timespec="milliseconds"),
                         station,
@@ -131,18 +167,28 @@ class InspectionStore:
                         report.verdict.value,
                         len(report.mismatches),
                         report.duration_ms,
-                        report.classifier,
-                        int(a.applied),
-                        a.shift_px,
-                        a.message,
+                        report.detector,
+                        int(pl.ok),
+                        pl.shift_px,
+                        pl.message,
                         report.error,
                         image_path,
+                        len(report.extras),
                     ),
                 )
                 iid = cur.lastrowid
                 cur.executemany(
-                    "INSERT INTO positions VALUES (?,?,?,?,?,?,?,?)",
-                    [(iid, p.cable, p.row, p.expected, p.found, p.confidence, int(p.ok), p.reason) for p in report.positions],
+                    """INSERT INTO positions (inspection_id, cable, row, expected, found, confidence, ok, reason,
+                       x, y, w, h) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    [
+                        (iid, p.cable, p.row, p.expected, p.found, p.confidence, int(p.ok), p.reason,
+                         *(p.box if p.box else (None, None, None, None)))
+                        for p in report.positions
+                    ],
+                )
+                cur.executemany(
+                    "INSERT INTO extras (inspection_id, label, confidence, x, y, w, h) VALUES (?,?,?,?,?,?,?)",
+                    [(iid, b.label, b.confidence, b.x, b.y, b.w, b.h) for b in report.extras],
                 )
                 cur.execute("COMMIT")
             except BaseException:
@@ -213,6 +259,9 @@ class InspectionStore:
                 f"SELECT * FROM positions WHERE inspection_id IN ({marks}) ORDER BY inspection_id, cable, row", tuple(chunk)
             )
         return out
+
+    def extras(self, inspection_id: int) -> list[dict[str, Any]]:
+        return self._all("SELECT * FROM extras WHERE inspection_id = ?", (inspection_id,))
 
     def events(self, start: datetime | None = None, end: datetime | None = None) -> list[dict[str, Any]]:
         start = start or datetime.min

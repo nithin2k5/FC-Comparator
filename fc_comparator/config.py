@@ -1,7 +1,8 @@
 """Typed application configuration backed by a single YAML file.
 
-Every setting (camera, thresholds, ROIs, alert backend, part numbers, ...) lives
-in the YAML file. Relative paths are resolved against the config file's folder.
+Every setting (camera, detector, thresholds, alert backend, clip types, part
+numbers, ...) lives in the YAML file. Relative paths are resolved against the
+config file's folder.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from typing import Any
 
 import yaml
 
-from .models import PartNumber, Roi
+from .models import PartNumber, Taxonomy
 
 log = logging.getLogger(__name__)
 
@@ -25,8 +26,6 @@ log = logging.getLogger(__name__)
 @dataclass
 class StationConfig:
     name: str = "Station-1"
-    cables: int = 4
-    rows: int = 4
 
 
 @dataclass
@@ -45,44 +44,47 @@ class CameraConfig:
 
 
 @dataclass
-class AlignmentConfig:
-    enabled: bool = True
-    max_features: int = 3000
-    work_width: int = 1000  # images are downscaled to this width for feature matching
-    ratio_test: float = 0.75
-    min_inliers: int = 25
-    ransac_threshold: float = 4.0
-    max_shift_px: float = 80.0
-    max_rotation_deg: float = 10.0
-    max_scale_change: float = 0.1
-    fail_as_ng: bool = True
+class TemplateDetectorConfig:
+    scale: float = 0.5  # images are matched at this scale for speed
+    max_per_class: int = 10  # templates per clip class (taken from marked boxes)
+    min_score: float = 0.55  # normalized correlation needed to report a clip
+    temperature: float = 0.04  # softmax temperature for class confidence
 
 
 @dataclass
-class TemplateConfig:
-    size: int = 64
-    search_margin: int = 6
-    max_templates_per_class: int = 40
-    temperature: float = 0.04
-    min_match_score: float = 0.4
-    mirror_forks: bool = True
-
-
-@dataclass
-class YoloConfig:
-    imgsz: int = 128
+class DetectorConfig:
+    backend: str = "auto"  # auto = YOLO if model_path exists, else template | yolo | template
+    model_path: str = "models/clip_detector.pt"
+    min_score: float = 0.25  # detections below this are ignored entirely
+    confidence_threshold: float = 0.6  # detections below this are "uncertain" (= NG)
+    imgsz: int = 960
     device: str = "cpu"
+    template: TemplateDetectorConfig = field(default_factory=TemplateDetectorConfig)
 
 
 @dataclass
-class ClassifierConfig:
-    backend: str = "auto"  # auto | yolo | template
-    model_path: str = "models/clip_classifier.pt"
-    dataset_dir: str = "data/dataset"
-    confidence_threshold: float = 0.6
-    roi_padding: float = 0.0  # fraction of ROI size added on every side before cropping
-    template: TemplateConfig = field(default_factory=TemplateConfig)
-    yolo: YoloConfig = field(default_factory=YoloConfig)
+class LayoutConfig:
+    match_tolerance: float = 0.6  # max centre distance, as a fraction of the clip size
+    max_shift_px: float = 200.0  # largest board shift accepted relative to the master image
+    max_rotation_deg: float = 8.0
+    min_matched_fraction: float = 0.5  # fewer matches => "board does not match this part's layout"
+
+
+@dataclass
+class AnnotationConfig:
+    dir: str = "data/annotations"
+
+
+@dataclass
+class TrainingConfig:
+    base_model: str = "yolo11n.pt"
+    epochs: int = 60
+    imgsz: int = 960
+    batch: int = 8
+    val_split: float = 0.2
+    mirror: bool = True  # add mirrored copies (swapping mirror classes such as fork_left/right)
+    patience: int = 20
+    workdir: str = "runs/detector"
 
 
 @dataclass
@@ -162,17 +164,19 @@ class TriggerConfig:
 class UiConfig:
     fullscreen: bool = False
     preview_fps: int = 15
-    font_scale: float = 1.0
+    appearance: str = "light"  # light | dark | system
+    scale: float = 1.0
 
 
 @dataclass
 class AppConfig:
     station: StationConfig = field(default_factory=StationConfig)
     camera: CameraConfig = field(default_factory=CameraConfig)
-    reference_image: str = "data/reference.png"
-    rois: list[Roi] = field(default_factory=list)
-    alignment: AlignmentConfig = field(default_factory=AlignmentConfig)
-    classifier: ClassifierConfig = field(default_factory=ClassifierConfig)
+    taxonomy: Taxonomy = field(default_factory=Taxonomy)
+    detector: DetectorConfig = field(default_factory=DetectorConfig)
+    layout: LayoutConfig = field(default_factory=LayoutConfig)
+    annotations: AnnotationConfig = field(default_factory=AnnotationConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
     compare: CompareConfig = field(default_factory=CompareConfig)
     alert: AlertConfig = field(default_factory=AlertConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
@@ -186,42 +190,26 @@ class AppConfig:
     base_dir: Path = field(default_factory=Path.cwd, repr=False, compare=False)
     path: Path | None = field(default=None, repr=False, compare=False)
 
-    # ---- helpers -------------------------------------------------------
     def resolve(self, p: str | os.PathLike) -> Path:
         """Resolve a config path relative to the config file's folder."""
         path = Path(p)
         return path if path.is_absolute() else (self.base_dir / path)
 
-    def roi_map(self) -> dict[tuple[int, int], Roi]:
-        return {r.key: r for r in self.rois}
-
     def validate(self) -> list[str]:
         """Return a list of problems (empty when the config is usable)."""
-        problems: list[str] = []
-        s = self.station
-        if s.cables < 1 or s.rows < 1:
-            problems.append("station.cables and station.rows must be >= 1")
-        seen: set[tuple[int, int]] = set()
-        for r in self.rois:
-            if not (1 <= r.cable <= s.cables and 1 <= r.row <= s.rows):
-                problems.append(f"ROI cable {r.cable} row {r.row} is outside the {s.cables}x{s.rows} layout")
-            if r.w <= 0 or r.h <= 0:
-                problems.append(f"ROI cable {r.cable} row {r.row} has non-positive size")
-            if r.key in seen:
-                problems.append(f"Duplicate ROI for cable {r.cable} row {r.row}")
-            seen.add(r.key)
-        missing = [(c, r) for c in range(1, s.cables + 1) for r in range(1, s.rows + 1) if (c, r) not in seen]
-        if missing:
-            problems.append(f"{len(missing)} positions have no ROI: {missing[:6]}{'...' if len(missing) > 6 else ''}")
+        problems = list(self.taxonomy.validate())
         for pn in self.parts.values():
             try:
-                pn.validate(s.rows)
+                pn.validate(self.taxonomy)
             except ValueError as exc:
                 problems.append(str(exc))
         if self.compare.mode not in ("master", "cross", "both"):
             problems.append(f"compare.mode must be master, cross or both (got {self.compare.mode!r})")
-        if not 0.0 <= self.classifier.confidence_threshold <= 1.0:
-            problems.append("classifier.confidence_threshold must be between 0 and 1")
+        d = self.detector
+        if not 0.0 <= d.min_score <= d.confidence_threshold <= 1.0:
+            problems.append("need 0 <= detector.min_score <= detector.confidence_threshold <= 1")
+        if d.backend not in ("auto", "yolo", "template"):
+            problems.append(f"detector.backend must be auto, yolo or template (got {d.backend!r})")
         return problems
 
     # ---- serialization -------------------------------------------------
@@ -231,10 +219,10 @@ class AppConfig:
             if f.name in ("base_dir", "path"):
                 continue
             value = getattr(self, f.name)
-            if f.name == "rois":
-                out[f.name] = [r.to_dict() for r in value]
-            elif f.name == "parts":
+            if f.name == "parts":
                 out[f.name] = {code: pn.to_dict() for code, pn in value.items()}
+            elif f.name == "taxonomy":
+                out[f.name] = value.to_dict()
             elif dataclasses.is_dataclass(value):
                 out[f.name] = dataclasses.asdict(value)
             else:
@@ -244,19 +232,11 @@ class AppConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any], base_dir: Path | None = None) -> "AppConfig":
         data = dict(data or {})
-        rois = [Roi(**{k: int(v) for k, v in r.items()}) for r in data.pop("rois", None) or []]
-        parts_raw = data.pop("parts", None) or {}
-        parts = {}
-        for code, spec in parts_raw.items():
-            spec = spec or {}
-            if isinstance(spec, list):  # shorthand: P001: [round, fork, ...]
-                spec = {"pattern": spec}
-            parts[str(code)] = PartNumber(
-                code=str(code), pattern=[str(p) for p in spec.get("pattern", [])], description=str(spec.get("description", ""))
-            )
+        parts = {str(code): PartNumber.from_dict(code, spec) for code, spec in (data.pop("parts", None) or {}).items()}
+        taxonomy = Taxonomy.from_dict(data.pop("taxonomy", None))
         cfg = _build(cls, data)
-        cfg.rois = rois
         cfg.parts = parts
+        cfg.taxonomy = taxonomy
         if base_dir is not None:
             cfg.base_dir = Path(base_dir)
         return cfg

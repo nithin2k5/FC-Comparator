@@ -10,7 +10,8 @@ from .database import DailyReport, InspectionStore
 
 INSPECTION_COLUMNS = [
     "id", "ts", "station", "operator_id", "part_number", "mode", "result", "ng_count",
-    "duration_ms", "classifier", "aligned", "align_shift", "align_message", "error", "image_path",
+    "duration_ms", "detector", "placement_ok", "placement_shift", "placement_message", "extras_count", "error",
+    "image_path",
 ]
 POSITION_COLUMNS = ["inspection_id", "cable", "row", "expected", "found", "confidence", "ok", "reason"]
 

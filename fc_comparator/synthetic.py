@@ -1,42 +1,67 @@
 """Synthetic inspection-board renderer.
 
 Produces photo-like boards (white board, fiducials, green connectors, dark
-cables, clips with per-instance jitter and sensor noise) with known ground
-truth. Used for the sample images, the end-to-end tests and demos without a
-camera. Geometry matches the ROIs in config/config.yaml.
+cables, clips with per-instance jitter and sensor noise) together with the
+exact clip boxes, i.e. perfectly "marked" images. Used for the sample data, the
+end-to-end tests and demos without a camera. The cable/row spacing can be
+changed to imitate part numbers with different layouts.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import cv2
 import numpy as np
 
-from .models import FORK, FORK_LEFT, FORK_RIGHT, MISSING, ROUND, SMALL, Roi
+from .models import FORK, FORK_LEFT, FORK_RIGHT, MISSING, ROUND, SMALL, Box
 
 WIDTH, HEIGHT = 1280, 960
-CABLE_X0, CABLE_DX = 260, 260
-ROW_Y0, ROW_DY = 300, 170
-ROI_SIZE = 120
 CONNECTOR_Y = (95, 185)
 
-
-def cable_x(cable: int) -> int:
-    return CABLE_X0 + (cable - 1) * CABLE_DX
-
-
-def row_y(row: int) -> int:
-    return ROW_Y0 + (row - 1) * ROW_DY
-
-
-def layout_rois(cables: int = 4, rows: int = 4, size: int = ROI_SIZE) -> list[Roi]:
-    return [
-        Roi(c, r, cable_x(c) - size // 2, row_y(r) - size // 2, size, size)
-        for c in range(1, cables + 1)
-        for r in range(1, rows + 1)
-    ]
+# Clip extents around the clip centre at scale 1 (x0, y0, x1, y1), before per-clip rotation.
+_EXTENTS = {
+    ROUND: (-30, -30, 30, 30),
+    FORK_RIGHT: (-14, -38, 56, 38),
+    FORK: (-14, -38, 56, 38),
+    FORK_LEFT: (-56, -38, 14, 38),
+    SMALL: (-18, -30, 18, 26),
+}
 
 
-def render_board(
+@dataclass(frozen=True)
+class Geometry:
+    """Where cables and rows are on the board (pixels)."""
+
+    cable_x0: float = 260
+    cable_dx: float = 260
+    row_y0: float = 300
+    row_dy: float = 170
+
+    def cable_x(self, cable: int) -> float:
+        return self.cable_x0 + (cable - 1) * self.cable_dx
+
+    def row_y(self, row: int) -> float:
+        return self.row_y0 + (row - 1) * self.row_dy
+
+
+DEFAULT_GEOMETRY = Geometry()
+
+
+def cable_x(cable: int) -> float:
+    return DEFAULT_GEOMETRY.cable_x(cable)
+
+
+def row_y(row: int) -> float:
+    return DEFAULT_GEOMETRY.row_y(row)
+
+
+def render_board(columns: list[list[str]], **kwargs) -> np.ndarray:
+    """Render a board image. See :func:`render_marked_board` for the arguments."""
+    return render_marked_board(columns, **kwargs)[0]
+
+
+def render_marked_board(
     columns: list[list[str]],
     *,
     shift: tuple[float, float] = (0.0, 0.0),
@@ -44,28 +69,32 @@ def render_board(
     seed: int = 0,
     noise: float = 3.0,
     jitter: float = 3.0,
-) -> np.ndarray:
-    """Render a board. ``columns[cable-1][row-1]`` is the clip label at that position.
+    geometry: Geometry = DEFAULT_GEOMETRY,
+) -> tuple[np.ndarray, list[Box]]:
+    """Render a board and return (image, clip boxes).
 
-    ``shift``/``angle`` move the whole board (as if it was placed off-centre);
-    ``jitter`` moves each clip a little along its cable, like real assembly.
+    ``columns[cable-1][row-1]`` is the clip label at that position (``missing``
+    draws nothing). ``shift``/``angle`` move the whole board (as if it was placed
+    off-centre); ``jitter`` moves each clip a little, like real assembly.
     """
     rng = np.random.default_rng(seed)
     img = np.full((HEIGHT, WIDTH, 3), 246, np.uint8)
     _draw_fiducials(img)
+    clips: list[tuple[str, float, float, float]] = []  # label, cx, cy, scale
 
     for ci, col in enumerate(columns):
-        c = ci + 1
-        x = cable_x(c)
-        _draw_connector(img, x, rng)
-        bottom = row_y(len(col)) + 90
-        cv2.line(img, (x, CONNECTOR_Y[1]), (x, bottom), (45, 45, 50), 9, cv2.LINE_AA)
+        x = geometry.cable_x(ci + 1)
+        _draw_connector(img, int(x), rng)
+        bottom = geometry.row_y(len(col)) + 90
+        cv2.line(img, (int(x), CONNECTOR_Y[1]), (int(x), int(bottom)), (45, 45, 50), 9, cv2.LINE_AA)
         for ri, label in enumerate(col):
-            y = row_y(ri + 1)
+            y = geometry.row_y(ri + 1)
             jx, jy = rng.uniform(-jitter, jitter, 2)
             scale = rng.uniform(0.94, 1.06)
             rot = rng.uniform(-4, 4)
             _draw_clip(img, label, (x + jx, y + jy), scale, rot, rng)
+            if label != MISSING:
+                clips.append((label, x + jx, y + jy, scale))
 
     # uneven lighting + sensor noise
     yy, xx = np.mgrid[0:HEIGHT, 0:WIDTH].astype(np.float32)
@@ -76,11 +105,18 @@ def render_board(
         out += rng.normal(0, noise, out.shape)
     img = np.clip(out, 0, 255).astype(np.uint8)
 
+    m = cv2.getRotationMatrix2D((WIDTH / 2, HEIGHT / 2), angle, 1.0)
+    m[:, 2] += shift
     if shift != (0.0, 0.0) or angle:
-        m = cv2.getRotationMatrix2D((WIDTH / 2, HEIGHT / 2), angle, 1.0)
-        m[:, 2] += shift
         img = cv2.warpAffine(img, m, (WIDTH, HEIGHT), flags=cv2.INTER_LINEAR, borderValue=(246, 246, 246))
-    return img
+
+    boxes = []
+    for label, cx, cy, s in clips:
+        x0, y0, x1, y1 = (v * s for v in _EXTENTS[label])
+        mx, my = m @ np.array([cx, cy, 1.0])
+        pad = 2.0  # small margin for the per-clip rotation
+        boxes.append(Box(label, mx + x0 - pad, my + y0 - pad, (x1 - x0) + 2 * pad, (y1 - y0) + 2 * pad))
+    return img, boxes
 
 
 def board_for_patterns(patterns: list[list[str]], orient_forks: str = "left") -> list[list[str]]:
