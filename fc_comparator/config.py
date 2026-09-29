@@ -45,9 +45,10 @@ class CameraConfig:
 
 @dataclass
 class TemplateDetectorConfig:
-    scale: float = 0.5  # images are matched at this scale for speed
-    max_per_class: int = 10  # templates per clip class (taken from marked boxes)
-    min_score: float = 0.55  # normalized correlation needed to report a clip
+    scale: float = 0.35  # images are matched at this scale for speed
+    max_per_class: int = 8  # templates per clip class (taken from marked boxes)
+    max_negatives: int = 48  # "not a clip" patches sampled/mined automatically from the marked images
+    min_score: float = 0.6  # normalized correlation needed to report a clip
     temperature: float = 0.04  # softmax temperature for class confidence
 
 
