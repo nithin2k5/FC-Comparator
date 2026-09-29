@@ -34,9 +34,9 @@ P002 = ["fork_right", "fork_right", "small", "fork_right"]
 P003 = ["small", "round", "fork_left", "round", "small"]
 GEO3 = Geometry(cable_x0=330, cable_dx=310, row_y0=260, row_dy=135)  # a part with another layout
 PARTS = {
-    "P001": ("Harness A (4 cables x 4 clips)", P001, 4, DEFAULT_GEOMETRY),
-    "P002": ("Harness B (4 cables x 4 clips)", P002, 4, DEFAULT_GEOMETRY),
-    "P003": ("Harness C (3 cables x 5 clips)", P003, 3, GEO3),
+    "P001": ("Harness A", P001, 4, DEFAULT_GEOMETRY),
+    "P002": ("Harness B", P002, 4, DEFAULT_GEOMETRY),
+    "P003": ("Harness C", P003, 3, GEO3),
 }
 
 

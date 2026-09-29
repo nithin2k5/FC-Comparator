@@ -1,9 +1,11 @@
 numpy>=1.24
 opencv-python>=4.8
 PyYAML>=6.0
-Pillow>=10         # fast image display in the tkinter UI (tkinter itself ships with Python)
-ultralytics>=8.3
-openpyxl>=3.1
-pyserial>=3.5
+scipy>=1.10         # optimal clip-to-position assignment
+customtkinter>=5.2  # station UI
+Pillow>=10          # image display in the UI
+ultralytics>=8.3    # YOLO detector training and inference
+openpyxl>=3.1       # Excel export
+pyserial>=3.5       # USB relay boards
 pytest>=8
 # On a Raspberry Pi also install:  gpiozero>=2.0  (usually preinstalled on Raspberry Pi OS)

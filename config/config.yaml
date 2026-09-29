@@ -36,7 +36,7 @@ trigger: {key: F9, gpio_pin: null}
 ui: {fullscreen: false, preview_fps: 15, appearance: light, scale: 1.0}
 parts:
   P001:
-    description: Harness A (4 cables x 4 clips)
+    description: Harness A
     cables: 4
     pattern: [round, fork_left, small, round]
     master_image: 20260929-224910-596196
@@ -63,7 +63,7 @@ parts:
       - [4, 3, 1039.5, 640.0]
       - [4, 4, 1038.2, 809.0]
   P002:
-    description: Harness B (4 cables x 4 clips)
+    description: Harness B
     cables: 4
     pattern: [fork_right, fork_right, small, fork_right]
     master_image: 20260929-224911-34a1a0
@@ -90,7 +90,7 @@ parts:
       - [4, 3, 1038.2, 635.3]
       - [4, 4, 1061.8, 808.1]
   P003:
-    description: Harness C (3 cables x 5 clips)
+    description: Harness C
     cables: 3
     pattern: [small, round, fork_left, round, small]
     master_image: 20260929-224911-78f920

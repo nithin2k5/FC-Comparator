@@ -12,16 +12,17 @@ dependencies = [
     "numpy>=1.24",
     "opencv-python>=4.8",
     "PyYAML>=6.0",
+    "scipy>=1.10",
 ]
 
 [project.optional-dependencies]
-ui = ["Pillow>=10"]
+ui = ["customtkinter>=5.2", "Pillow>=10"]
 yolo = ["ultralytics>=8.3"]
 excel = ["openpyxl>=3.1"]
 relay = ["pyserial>=3.5"]
 pi = ["gpiozero>=2.0"]
 dev = ["pytest>=8"]
-all = ["Pillow>=10", "ultralytics>=8.3", "openpyxl>=3.1", "pyserial>=3.5", "pytest>=8"]
+all = ["customtkinter>=5.2", "Pillow>=10", "ultralytics>=8.3", "openpyxl>=3.1", "pyserial>=3.5", "pytest>=8"]
 
 [project.scripts]
 fc-comparator = "fc_comparator.cli:main"
@@ -33,5 +34,5 @@ include = ["fc_comparator*"]
 testpaths = ["tests"]
 markers = [
     "slow: long-running tests (YOLO training)",
-    "ui: tests that drive the tkinter UI (skipped without a display)",
+    "ui: tests that drive the station UI (skipped without a display)",
 ]
