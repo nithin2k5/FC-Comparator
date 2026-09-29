@@ -130,10 +130,12 @@ Install on a connected machine with `pip download -r requirements.txt -d wheels`
 The sample config uses the `file` source and the synthetic sample boards in `samples/`:
 
 ```bash
-python -m fc_comparator check                                    # validate config, dataset, source
-python -m fc_comparator inspect --image samples/boards/board_P001_mixed.jpg --part P001 --out annotated.jpg
-python -m fc_comparator                                          # start the UI
+python main.py                                                   # start the UI
+python main.py check                                             # validate config, dataset, source
+python main.py inspect --image samples/boards/board_P001_mixed.jpg --part P001 --out annotated.jpg
 ```
+
+`python main.py …` and `python -m fc_comparator …` are equivalent; every command below works with either.
 
 ```
 NG  part=P001  112 ms  classifier=template
