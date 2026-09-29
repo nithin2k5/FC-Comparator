@@ -67,7 +67,8 @@ def cmd_inspect(args) -> int:
     if rep.error:
         print(f"error: {rep.error}")
     for p in rep.mismatches:
-        print(f"  NG cable {p.cable} row {p.row}: expected {p.expected}, found {p.found} ({p.confidence:.0%}) - {p.reason}")
+        conf = "" if p.found == "missing" else f" ({p.confidence:.0%})"
+        print(f"  NG cable {p.cable} row {p.row}: expected {p.expected}, found {p.found}{conf} - {p.reason}")
     for b in rep.extras:
         print(f"  NG unexpected {b.label} ({b.confidence:.0%}) at x={b.center[0]:.0f} y={b.center[1]:.0f}")
     if args.verbose:

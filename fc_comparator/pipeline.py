@@ -138,8 +138,11 @@ class Inspector:
             inside = lambda b: True  # noqa: E731
         report.extras = [dets[j] for j in extras_idx if dets[j].confidence >= thr and inside(dets[j])]
         n_pos = part.cables * part.rows
-        if not report.error and len(report.extras) >= max(2, 0.25 * n_pos):
-            report.error = f"board does not match {part.code}'s layout ({len(report.extras)} unexpected clips) - wrong part?"
+        # confidently *different* clips (not missing / uncertain) - those point at another part number
+        n_wrong = sum(not p.ok and p.found in cfg.taxonomy.classes for p in report.positions)
+        if not report.error and (len(report.extras) >= max(2, 0.25 * n_pos) or n_wrong >= 0.75 * n_pos):
+            report.error = (f"board does not match {part.code} ({n_wrong}/{n_pos} positions wrong, "
+                            f"{len(report.extras)} unexpected clips) - wrong part?")
         return self._done(report, t0), dets
 
     @staticmethod
