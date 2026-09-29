@@ -23,7 +23,8 @@ def test_sample_config_is_valid():
 
 def test_relative_paths_resolve_against_config_folder():
     cfg = load_config(SAMPLE)
-    assert cfg.resolve(cfg.reference_image) == SAMPLE.parent / "../samples/reference.png"
+    assert cfg.resolve(cfg.reference_image) == SAMPLE.parent / "../samples/reference.jpg"
+    assert cfg.resolve(cfg.reference_image).is_file()
 
 
 def test_roundtrip(tmp_path):

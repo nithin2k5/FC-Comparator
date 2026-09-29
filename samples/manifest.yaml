@@ -1,0 +1,47 @@
+# Expected results for the sample boards (used by tests/test_e2e.py)
+- image: boards/board_P001_ok.jpg
+  part: P001
+  expected_ng: []
+  note: all correct
+- image: boards/board_P002_ok.jpg
+  part: P002
+  expected_ng: []
+  note: all correct
+- image: boards/board_P001_mixed.jpg
+  part: P001
+  expected_ng:
+  - [3, 1]
+  - [3, 4]
+  note: cable 3 is a P002 harness
+- image: boards/board_P002_mixed.jpg
+  part: P002
+  expected_ng:
+  - [1, 1]
+  - [1, 4]
+  note: cable 1 is a P001 harness
+- image: boards/board_P001_missing.jpg
+  part: P001
+  expected_ng:
+  - [2, 3]
+  note: clip missing on cable 2 row 3
+- image: boards/board_P001_shifted_ok.jpg
+  part: P001
+  expected_ng: []
+  note: board shifted 20/-15 px, 1 deg
+- image: boards/board_P001_shifted_mixed.jpg
+  part: P001
+  expected_ng:
+  - [2, 1]
+  - [2, 4]
+  note: shifted -18/20 px, cable 2 is P002
+- image: boards/board_P002_wrong_clip.jpg
+  part: P002
+  expected_ng:
+  - [4, 2]
+  - [3, 3]
+  note: round instead of fork at C4R2, fork instead of small at C3R3
+- image: boards/board_P001_obstructed.jpg
+  part: P001
+  expected_ng:
+  - [3, 2]
+  note: unknown object at C3R2

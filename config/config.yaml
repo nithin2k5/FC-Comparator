@@ -19,9 +19,9 @@ camera:
   focus: null             # fixed focus value when autofocus is off (driver specific)
   exposure: null          # fixed exposure (driver specific), null = leave as is
   warmup_frames: 5
-  file_path: ../samples/board_P001_ok.png
+  file_path: ../samples/boards/board_P001_ok.jpg
 
-reference_image: ../samples/reference.png
+reference_image: ../samples/reference.jpg
 
 rois:
   - {cable: 1, row: 1, x: 200, y: 240, w: 120, h: 120}
@@ -56,7 +56,7 @@ alignment:
 classifier:
   backend: auto           # auto = YOLO if model_path exists, else template matching
   model_path: ../models/clip_classifier.pt
-  dataset_dir: ../data/dataset   # labeled crops: one subfolder per class
+  dataset_dir: ../samples/dataset   # labeled crops, one subfolder per class (use ../data/dataset for production)
   confidence_threshold: 0.6      # below this => "uncertain" => NG
   roi_padding: 0.0
   template:

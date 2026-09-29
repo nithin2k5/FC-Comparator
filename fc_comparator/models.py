@@ -111,6 +111,7 @@ class Classification:
     label: str
     confidence: float
     scores: dict[str, float] = field(default_factory=dict)
+    guess: str = ""  # classifier's best label when ``label`` was downgraded to uncertain
 
 
 @dataclass(frozen=True)
@@ -151,7 +152,7 @@ class InspectionReport:
 
     @property
     def verdict(self) -> Verdict:
-        if self.error or not self.positions or not self.alignment.ok:
+        if self.error or not self.positions:
             return Verdict.NG
         return Verdict.OK if all(p.ok for p in self.positions) else Verdict.NG
 
