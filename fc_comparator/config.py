@@ -131,7 +131,7 @@ class AlertConfig:
 
 @dataclass
 class SecurityConfig:
-    # PBKDF2 hashes, see fc_comparator.security. Defaults: setup "admin", supervisor PIN "1234".
+    # PBKDF2 hashes, see fc_comparator.security. Empty = nobody can log in / acknowledge.
     setup_password: str = ""
     supervisor_pin: str = ""
     lock_on_ng: bool = True

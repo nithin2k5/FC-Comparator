@@ -99,9 +99,9 @@ alert:
     timeout: 0.5
 
 security:
-  # Defaults: setup password "admin", supervisor PIN "1234".
-  # CHANGE THEM: python -m fc_comparator set-secret --setup / --pin
-  setup_password: pbkdf2_sha256$200000$c55bb220ad33546958a4766beca2fa70$d7df914b01bb377ca86c704a3f03c0e0f2f0787ecf91a63ec4533392b2f920a1
+  # Defaults: setup password "5678", supervisor PIN "1234" (numeric: the touch keypad has digits only).
+  # CHANGE THEM in Settings, or: python -m fc_comparator set-secret --setup / --pin
+  setup_password: pbkdf2_sha256$200000$f7f2012437381db47d00e79580e16017$c92040281e2d248d78a0c9371b34ffbf396aef1a23083f000de018627f6f6f21
   supervisor_pin: pbkdf2_sha256$200000$c32465c0d7d720e41950572856528d15$40fbbf25cb42ce6df878f046b78d277874913140f99a0328d788452966c95f90
   lock_on_ng: true
 

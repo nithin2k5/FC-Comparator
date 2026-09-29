@@ -197,6 +197,10 @@ class InspectionStore:
             sql += f" LIMIT {int(limit)}"
         return self._all(sql, tuple(args))
 
+    def get_inspection(self, inspection_id: int) -> dict[str, Any] | None:
+        rows = self._all("SELECT * FROM inspections WHERE id = ?", (inspection_id,))
+        return rows[0] if rows else None
+
     def positions(self, inspection_ids: int | list[int]) -> list[dict[str, Any]]:
         ids = [inspection_ids] if isinstance(inspection_ids, int) else list(inspection_ids)
         if not ids:

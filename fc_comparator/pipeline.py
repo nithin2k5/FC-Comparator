@@ -158,6 +158,27 @@ class Station:
         self.lock.pin_hash = self.cfg.security.supervisor_pin
         self.lock.enabled = self.cfg.security.lock_on_ng
 
+    def rebuild_io(self) -> list[str]:
+        """Recreate frame source and alert backend after settings changed. Returns problems."""
+        problems = []
+        self.source.close()
+        self.source = create_source(self.cfg)
+        try:
+            self.source.open()
+        except Exception as exc:
+            problems.append(f"camera: {exc}")
+        try:
+            backend = create_alert(self.cfg.alert)
+        except Exception as exc:
+            from .alert import ConsoleAlert
+
+            problems.append(f"alert backend {self.cfg.alert.backend}: {exc} (using console)")
+            backend = ConsoleAlert()
+        old, self.alert = self.alert, AlertController(backend, self.cfg.alert)
+        old.close()
+        self.alert.idle()
+        return problems
+
     def can_inspect(self, part_number: str) -> tuple[bool, str]:
         st = self.lock.state
         if st.locked and part_number != st.part_number:

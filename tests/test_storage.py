@@ -44,6 +44,8 @@ def test_save_and_query(store):
                     "confidence": 0.8, "ok": 0, "reason": "fork_left != small"}]
     assert store.inspections(result="OK")[0]["id"] == ok_id
     assert store.inspections(part_number="P999") == []
+    assert store.get_inspection(ok_id)["result"] == "OK"
+    assert store.get_inspection(9999) is None
     store.set_image_path(ok_id, "ok.jpg")
     assert store.inspections(result="OK")[0]["image_path"] == "ok.jpg"
 

@@ -17,7 +17,7 @@ def test_sample_config_is_valid():
     assert len(cfg.rois) == 16
     assert set(cfg.parts) == {"P001", "P002"}
     assert cfg.parts["P002"].pattern == ["fork", "fork", "small", "fork"]
-    assert verify_secret("admin", cfg.security.setup_password)
+    assert verify_secret("5678", cfg.security.setup_password)
     assert verify_secret("1234", cfg.security.supervisor_pin)
 
 
