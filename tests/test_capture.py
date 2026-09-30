@@ -1,10 +1,15 @@
 import numpy as np
 import pytest
 
-from fc_comparator.capture import CaptureError, FileSource, create_source
-from fc_comparator.capture.sources import read_image, write_image
 from fc_comparator.config import AppConfig
-from fc_comparator.synthetic import render_board
+from fc_comparator.vision.camera import (
+    CaptureError,
+    FileSource,
+    create_source,
+    read_image,
+    write_image,
+)
+from fc_comparator.vision.synthetic import render_board
 
 
 def test_file_source_roundtrip(tmp_path):

@@ -1,8 +1,8 @@
 """FC-Comparator entry point.
 
-    python main.py                      # start the station UI
-    python main.py inspect --image samples/boards/board_P001_mixed.jpg --part P001
-    python main.py --help               # all commands (report, export, harvest, set-secret, check)
+    python main.py                      # start the station UI (login: nice / nice1234)
+    python main.py inspect --image board.jpg --part P001
+    python main.py --help               # all commands (add-part, train, evaluate, report, export, check ...)
 """
 
 import sys

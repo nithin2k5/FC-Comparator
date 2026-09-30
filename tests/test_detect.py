@@ -4,11 +4,11 @@ import cv2
 import numpy as np
 import pytest
 
-from fc_comparator.annotations import AnnotationStore
 from fc_comparator.config import AppConfig, TemplateDetectorConfig
-from fc_comparator.detect import TemplateDetector, create_detector, nms
-from fc_comparator.models import Box, Taxonomy
-from fc_comparator.synthetic import render_marked_board
+from fc_comparator.core.models import Box, Taxonomy
+from fc_comparator.vision.dataset import AnnotationStore
+from fc_comparator.vision.detect import TemplateDetector, create_detector, nms
+from fc_comparator.vision.synthetic import render_marked_board
 
 from .conftest import random_columns
 
@@ -93,7 +93,7 @@ def test_auto_never_switches_to_an_undertrained_model(tmp_path, marked_store):
     import json
 
     cfg = AppConfig(base_dir=tmp_path)
-    cfg.annotations.dir = str(marked_store.root)
+    cfg.dataset.dir = str(marked_store.root)
     model = tmp_path / "models" / "clip_detector.pt"
     model.parent.mkdir()
     model.write_bytes(b"not really a model")
@@ -109,7 +109,7 @@ def test_auto_never_switches_to_an_undertrained_model(tmp_path, marked_store):
 def test_factory_falls_back_to_templates(tmp_path, marked_store):
     cfg = AppConfig(base_dir=tmp_path)
     cfg.detector.model_path = "missing.pt"
-    cfg.annotations.dir = str(marked_store.root)
+    cfg.dataset.dir = str(marked_store.root)
     assert create_detector(cfg).name == "template"
     cfg.detector.backend = "yolo"
     with pytest.raises(FileNotFoundError):

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fc-comparator"
-version = "1.0.0"
+version = "2.0.0"
 description = "Vision inspection station for wire harness clip verification"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,13 +16,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ui = ["customtkinter>=5.2", "Pillow>=10"]
 yolo = ["ultralytics>=8.3"]
 excel = ["openpyxl>=3.1"]
 relay = ["pyserial>=3.5"]
 pi = ["gpiozero>=2.0"]
 dev = ["pytest>=8"]
-all = ["customtkinter>=5.2", "Pillow>=10", "ultralytics>=8.3", "openpyxl>=3.1", "pyserial>=3.5", "pytest>=8"]
+all = ["ultralytics>=8.3", "openpyxl>=3.1", "pyserial>=3.5", "pytest>=8"]
 
 [project.scripts]
 fc-comparator = "fc_comparator.cli:main"

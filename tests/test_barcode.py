@@ -1,5 +1,5 @@
-from fc_comparator.barcode import parse_scan
 from fc_comparator.config import BarcodeConfig
+from fc_comparator.station.barcode import parse_scan
 
 KNOWN = {"P001", "P002"}
 

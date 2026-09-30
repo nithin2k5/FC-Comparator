@@ -18,7 +18,7 @@ from typing import Any
 
 import yaml
 
-from .models import PartNumber, Taxonomy
+from .core.models import PartNumber, Taxonomy
 
 log = logging.getLogger(__name__)
 
@@ -75,8 +75,8 @@ class LayoutConfig:
 
 
 @dataclass
-class AnnotationConfig:
-    dir: str = "data/annotations"
+class DatasetConfig:
+    dir: str = "dataset"  # training images + the clip boxes marked on them
 
 
 @dataclass
@@ -89,11 +89,6 @@ class TrainingConfig:
     mirror: bool = True  # add mirrored copies (swapping mirror classes such as fork_left/right)
     patience: int = 30
     workdir: str = "runs/detector"
-
-
-@dataclass
-class CompareConfig:
-    mode: str = "master"  # master (A) | cross (B) | both
 
 
 @dataclass
@@ -137,8 +132,10 @@ class AlertConfig:
 
 @dataclass
 class SecurityConfig:
-    # PBKDF2 hashes, see fc_comparator.security. Empty = nobody can log in / acknowledge.
-    setup_password: str = ""
+    # Passwords are PBKDF2 hashes, see fc_comparator.security. Empty = nobody can log in / acknowledge.
+    login_user: str = "nice"
+    login_password: str = (  # default password: nice1234
+        "pbkdf2_sha256$200000$018ae44a90f8104c8d1feee1df463e2c$e313d84171de1c68a126161c0b6b599aa36a20b6a3de29fabff9ba1e8887ef9b")
     supervisor_pin: str = ""
     lock_on_ng: bool = True
 
@@ -168,8 +165,6 @@ class TriggerConfig:
 class UiConfig:
     fullscreen: bool = False
     preview_fps: int = 15
-    appearance: str = "light"  # light | dark | system
-    scale: float = 1.0
 
 
 @dataclass
@@ -179,9 +174,8 @@ class AppConfig:
     taxonomy: Taxonomy = field(default_factory=Taxonomy)
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     layout: LayoutConfig = field(default_factory=LayoutConfig)
-    annotations: AnnotationConfig = field(default_factory=AnnotationConfig)
+    dataset: DatasetConfig = field(default_factory=DatasetConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
-    compare: CompareConfig = field(default_factory=CompareConfig)
     alert: AlertConfig = field(default_factory=AlertConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
@@ -207,8 +201,6 @@ class AppConfig:
                 pn.validate(self.taxonomy)
             except ValueError as exc:
                 problems.append(str(exc))
-        if self.compare.mode not in ("master", "cross", "both"):
-            problems.append(f"compare.mode must be master, cross or both (got {self.compare.mode!r})")
         d = self.detector
         if not 0.0 <= d.min_score <= d.confidence_threshold <= 1.0:
             problems.append("need 0 <= detector.min_score <= detector.confidence_threshold <= 1")
@@ -236,6 +228,9 @@ class AppConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any], base_dir: Path | None = None) -> "AppConfig":
         data = dict(data or {})
+        if "annotations" in data and "dataset" not in data:  # older config files
+            data["dataset"] = data.pop("annotations")
+        data.pop("compare", None)
         parts = {str(code): PartNumber.from_dict(code, spec) for code, spec in (data.pop("parts", None) or {}).items()}
         taxonomy = Taxonomy.from_dict(data.pop("taxonomy", None))
         cfg = _build(cls, data)

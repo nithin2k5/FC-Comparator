@@ -2,13 +2,13 @@
 
     main.py                                  start the station UI
     main.py inspect --image board.jpg --part P001 [--out annotated.jpg]
-    main.py add-images photos/ --part P004 [--good]     upload images to mark in the UI
-    main.py make-master --image-id ID --part P004       part pattern + layout from a marked good board
+    main.py add-images photos/               add training images (mark the clips on the Training tab)
+    main.py add-part --image good.jpg --part P004       part master from a photo of a good board
     main.py train [--epochs 80]              train the YOLO detector on the marked images
     main.py evaluate                         score the current detector on the marked images
     main.py report [--day 2026-09-29]
     main.py export --out history.xlsx [--from 2026-09-01 --to 2026-09-30]
-    main.py set-secret --pin | --setup
+    main.py set-secret --pin | --login [--user NAME]
     main.py check                            validate config, marked data, detector, camera
 """
 
@@ -31,9 +31,9 @@ def _cfg(args):
 
 
 def _store(cfg):
-    from .annotations import AnnotationStore
+    from .vision.dataset import AnnotationStore
 
-    return AnnotationStore(cfg.resolve(cfg.annotations.dir))
+    return AnnotationStore(cfg.resolve(cfg.dataset.dir))
 
 
 def cmd_gui(args) -> int:
@@ -43,11 +43,10 @@ def cmd_gui(args) -> int:
 
 
 def cmd_inspect(args) -> int:
-    from .alert import AlertController, NullAlert
-    from .capture import FileSource
-    from .capture.sources import write_image
-    from .pipeline import Station
-    from .storage import InspectionStore
+    from .station import Station
+    from .station.alerts import AlertController, NullAlert
+    from .station.storage import InspectionStore
+    from .vision.camera import FileSource, write_image
 
     cfg = _cfg(args)
     alert = None if args.alert else AlertController(NullAlert(), cfg.alert)
@@ -80,7 +79,7 @@ def cmd_inspect(args) -> int:
 
 
 def cmd_add_images(args) -> int:
-    from .capture.sources import IMAGE_EXTENSIONS
+    from .vision.camera import IMAGE_EXTENSIONS
 
     cfg = _cfg(args)
     store = _store(cfg)
@@ -97,37 +96,45 @@ def cmd_add_images(args) -> int:
         added += new
         dup += not new
     print(f"Added {added} image(s), {dup} duplicate(s) skipped. Store: {store.stats()}")
-    print("Annotate the clips on them in the app: Setup.")
+    print("Mark the clips on them in the app: Training tab.")
     return 0
 
 
-def cmd_make_master(args) -> int:
+def cmd_add_part(args) -> int:
     from .config import save_config
-    from .layout import LayoutError
-    from .parts import part_from_marked_image
+    from .core.layout import LayoutError
+    from .core.parts import part_from_boxes
+    from .vision.camera import read_image
+    from .vision.detect import create_detector
 
     cfg = _cfg(args)
     store = _store(cfg)
-    if args.image_id not in store:
-        print(f"No image {args.image_id} in {store.root}", file=sys.stderr)
-        return 2
+    if args.image_id:
+        if args.image_id not in store:
+            print(f"No image {args.image_id} in {store.root}", file=sys.stderr)
+            return 2
+        rec = store.get(args.image_id)
+        boxes, size, master = rec.boxes, (rec.width, rec.height), rec.id
+    else:
+        img = read_image(args.image)
+        boxes = [b for b in create_detector(cfg, store).detect(img) if b.confidence >= cfg.detector.confidence_threshold]
+        size, master = (img.shape[1], img.shape[0]), ""
     try:
-        part, notes = part_from_marked_image(store, args.image_id, args.part, cfg.taxonomy, args.description or "")
+        part = part_from_boxes(args.part, boxes, size, cfg.taxonomy, args.description or "", master)
     except (LayoutError, ValueError) as exc:
-        print(f"Cannot create master: {exc}", file=sys.stderr)
+        print(f"Cannot create the part: {exc}", file=sys.stderr)
         return 2
-    existed = args.part in cfg.parts
+    existed = part.code in cfg.parts
     cfg.parts[part.code] = part
     save_config(cfg)
-    store.update(args.image_id, part=part.code, good=True)
-    for n in notes:
-        print(f"note: {n}")
-    print(f"{'Updated' if existed else 'Created'} {part.code}: {part.cables} cables x {part.rows} rows, pattern {part.pattern}")
+    print(f"{'Updated' if existed else 'Created'} {part.code}: {part.cables} cables x {part.rows} rows")
+    for r, row in enumerate(part.pattern, 1):
+        print(f"  row {r}: {', '.join(row)}")
     return 0
 
 
 def cmd_train(args) -> int:
-    from .training import train_detector
+    from .vision.training import train_detector
 
     cfg = _cfg(args)
     if args.device:
@@ -138,8 +145,8 @@ def cmd_train(args) -> int:
 
 
 def cmd_evaluate(args) -> int:
-    from .detect import create_detector
-    from .training import evaluate, samples_from_store
+    from .vision.detect import create_detector
+    from .vision.training import evaluate, samples_from_store
 
     cfg = _cfg(args)
     store = _store(cfg)
@@ -151,7 +158,7 @@ def cmd_evaluate(args) -> int:
 
 
 def cmd_report(args) -> int:
-    from .storage import InspectionStore
+    from .station.storage import InspectionStore
 
     cfg = _cfg(args)
     store = InspectionStore(cfg.resolve(cfg.storage.database))
@@ -161,7 +168,7 @@ def cmd_report(args) -> int:
 
 
 def cmd_export(args) -> int:
-    from .storage import InspectionStore, export_csv, export_excel
+    from .station.storage import InspectionStore, export_csv, export_excel
 
     cfg = _cfg(args)
     store = InspectionStore(cfg.resolve(cfg.storage.database))
@@ -178,10 +185,10 @@ def cmd_export(args) -> int:
 
 def cmd_set_secret(args) -> int:
     from .config import save_config
-    from .security import hash_secret
+    from .station.security import hash_secret
 
     cfg = _cfg(args)
-    what = "supervisor PIN" if args.pin else "setup password"
+    what = "supervisor PIN" if args.pin else "login password"
     first = getpass.getpass(f"New {what}: ")
     if len(first) < 4 or getpass.getpass("Repeat: ") != first:
         print("Too short or not matching; unchanged.", file=sys.stderr)
@@ -189,15 +196,17 @@ def cmd_set_secret(args) -> int:
     if args.pin:
         cfg.security.supervisor_pin = hash_secret(first)
     else:
-        cfg.security.setup_password = hash_secret(first)
+        cfg.security.login_password = hash_secret(first)
+        if args.user:
+            cfg.security.login_user = args.user
     save_config(cfg)
     print(f"{what} updated in {cfg.path}")
     return 0
 
 
 def cmd_check(args) -> int:
-    from .capture import create_source
-    from .detect import create_detector
+    from .vision.camera import create_source
+    from .vision.detect import create_detector
 
     cfg = _cfg(args)
     problems = cfg.validate()
@@ -241,13 +250,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-store", action="store_true", help="do not log to the database")
     p.add_argument("-v", "--verbose", action="store_true")
 
-    p = sub.add_parser("add-images", help="upload image files/folders for marking")
+    p = sub.add_parser("add-images", help="add image files/folders to the training data set")
     p.add_argument("paths", nargs="+")
     p.add_argument("--part", help="part number shown on these boards")
-    p.add_argument("--good", action="store_true", help="the boards are known good (candidates for masters)")
+    p.add_argument("--good", action="store_true", help="the boards are known good")
 
-    p = sub.add_parser("make-master", help="create/update a part from a completely marked good board")
-    p.add_argument("--image-id", required=True)
+    p = sub.add_parser("add-part", help="create/update a part from a good board (photo or marked data-set image)")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--image", help="photo of a good board; the clips are found by the detector")
+    g.add_argument("--image-id", help="a completely marked data-set image")
     p.add_argument("--part", required=True)
     p.add_argument("--description")
 
@@ -267,10 +278,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--from", dest="date_from")
     p.add_argument("--to", dest="date_to")
 
-    p = sub.add_parser("set-secret", help="change the supervisor PIN or setup password")
+    p = sub.add_parser("set-secret", help="change the supervisor PIN or the login password")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--pin", action="store_true")
-    g.add_argument("--setup", action="store_true")
+    g.add_argument("--login", action="store_true")
+    p.add_argument("--user", help="with --login: also change the username")
 
     sub.add_parser("check", help="validate config, marked data, detector and camera")
 
@@ -278,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=args.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     handlers = {
         None: cmd_gui, "gui": cmd_gui, "inspect": cmd_inspect, "add-images": cmd_add_images,
-        "make-master": cmd_make_master, "train": cmd_train, "evaluate": cmd_evaluate, "report": cmd_report,
+        "add-part": cmd_add_part, "train": cmd_train, "evaluate": cmd_evaluate, "report": cmd_report,
         "export": cmd_export, "set-secret": cmd_set_secret, "check": cmd_check,
     }
     return handlers[args.cmd](args)

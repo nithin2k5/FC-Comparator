@@ -5,12 +5,27 @@ import time
 
 import pytest
 
-from fc_comparator.alert import AlertController, ConsoleAlert, Outputs, StationLock, create_alert
-from fc_comparator.alert.gpio import GpioAlert, GpioPedal
-from fc_comparator.alert.modbus import ModbusAlert, ModbusExceptionResponse, ModbusTcpClient
-from fc_comparator.alert.usb_relay import UsbRelayAlert, relay_command
-from fc_comparator.config import AlertConfig, GpioAlertConfig, ModbusAlertConfig, UsbRelayAlertConfig
-from fc_comparator.security import hash_secret
+from fc_comparator.config import (
+    AlertConfig,
+    GpioAlertConfig,
+    ModbusAlertConfig,
+    UsbRelayAlertConfig,
+)
+from fc_comparator.station.alerts import (
+    AlertController,
+    ConsoleAlert,
+    Outputs,
+    create_alert,
+)
+from fc_comparator.station.alerts.gpio import GpioAlert, GpioPedal
+from fc_comparator.station.alerts.modbus import (
+    ModbusAlert,
+    ModbusExceptionResponse,
+    ModbusTcpClient,
+)
+from fc_comparator.station.alerts.usb_relay import UsbRelayAlert, relay_command
+from fc_comparator.station.lock import StationLock
+from fc_comparator.station.security import hash_secret
 
 
 def wait_for(cond, timeout=2.0):

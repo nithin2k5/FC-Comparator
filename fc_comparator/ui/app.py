@@ -1,51 +1,73 @@
-"""Start the station UI."""
+"""Start the station UI: login screen, then the main window."""
 
 from __future__ import annotations
 
 import logging
 import sys
+import tkinter as tk
 
 log = logging.getLogger(__name__)
 
 
-def run(config_path: str) -> int:
+def _dpi_aware() -> None:
+    """Sharp text on scaled Windows displays (otherwise Windows stretches the whole window)."""
+    if sys.platform != "win32":
+        return
     try:
-        import customtkinter as ctk
-    except ImportError:
-        print("The UI needs CustomTkinter:  pip install customtkinter", file=sys.stderr)
-        return 2
+        import ctypes
 
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:  # older Windows
+        pass
+
+
+def run(config_path: str) -> int:
     from ..config import load_config
-    from ..pipeline import Station
+    from ..station import Station
+    from . import style
+    from .login import LoginPage
     from .main_window import MainWindow
 
     cfg = load_config(config_path)
-    ctk.set_appearance_mode(cfg.ui.appearance if cfg.ui.appearance in ("light", "dark", "system") else "light")
-    ctk.set_default_color_theme("blue")
-    if cfg.ui.scale and cfg.ui.scale != 1.0:
-        ctk.set_widget_scaling(cfg.ui.scale)
-
-    root = ctk.CTk()
+    _dpi_aware()
+    root = tk.Tk()
+    root.title(f"FC-Comparator - {cfg.station.name}")
     root.minsize(1200, 760)
-    splash = ctk.CTkLabel(root, text="Starting station ...\nloading detector", font=ctk.CTkFont(size=20))
-    splash.pack(expand=True)
-    root.update()
+    style.apply(root)
     station = Station(cfg)
     station.open()
-    splash.destroy()
-    win = MainWindow(root, station)
-    win.pack(fill="both", expand=True)
+    win: MainWindow | None = None
+
+    def login(user: str) -> None:
+        nonlocal win
+        login_page.pack_forget()
+        win = MainWindow(root, station, user=user, on_logout=logout)
+        win.pack(fill="both", expand=True)
+
+    def logout() -> None:
+        nonlocal win
+        if win is not None:
+            win.shutdown()
+            win.destroy()
+            win = None
+        login_page.reset()
+        login_page.pack(fill="both", expand=True)
+
+    login_page = LoginPage(root, cfg, login, station.store.log_event)
+    login_page.pack(fill="both", expand=True)
+    login_page.reset()
 
     if cfg.ui.fullscreen:
         root.attributes("-fullscreen", True)
     else:
         try:
-            root.after(0, lambda: root.state("zoomed"))  # Windows / macOS
-        except Exception:
-            pass
+            root.state("zoomed")  # Windows
+        except tk.TclError:
+            root.geometry("1400x900")
 
     def on_close() -> None:
-        win.shutdown()
+        if win is not None:
+            win.shutdown()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)

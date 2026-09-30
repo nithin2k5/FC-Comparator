@@ -2,9 +2,14 @@ import numpy as np
 import pytest
 
 from fc_comparator.config import LayoutConfig
-from fc_comparator.layout import LayoutError, infer_grid, master_from_boxes, match_layout
-from fc_comparator.models import Box, Taxonomy
-from fc_comparator.synthetic import Geometry, render_marked_board
+from fc_comparator.core.layout import (
+    LayoutError,
+    infer_grid,
+    master_from_boxes,
+    match_layout,
+)
+from fc_comparator.core.models import Box, Taxonomy
+from fc_comparator.vision.synthetic import Geometry, render_marked_board
 
 P001 = ["round", "fork_left", "small", "round"]
 TAX = Taxonomy()
@@ -41,35 +46,33 @@ def test_infer_grid_wrong_counts():
 
 def test_master_from_good_board():
     img_boxes = boxes_for([P001] * 4)
-    pattern, layout, notes = master_from_boxes(img_boxes, (1280, 960), TAX)
-    assert pattern == P001 and notes == []
+    pattern, layout = master_from_boxes(img_boxes, (1280, 960))
+    assert pattern == [[lbl] * 4 for lbl in P001]
     assert (layout.cables, layout.rows) == (4, 4)
     assert layout.positions[(3, 1)] == pytest.approx((780, 300), abs=6)  # round clip, centred on the cable
     assert all(type(v) is float for xy in layout.positions.values() for v in xy)  # YAML-serializable
     assert 55 < layout.clip_size[0] < 80
 
 
-def test_master_rejects_incomplete_or_mixed_boards():
+def test_master_keeps_a_different_clip_per_cable():
+    cols = [list(P001) for _ in range(4)]
+    cols[0][0] = "small"
+    cols[3][1] = "fork_right"
+    pattern, _ = master_from_boxes(boxes_for(cols), (1280, 960))
+    assert pattern[0] == ["small", "round", "round", "round"]
+    assert pattern[1] == ["fork_left", "fork_left", "fork_left", "fork_right"]
+
+
+def test_master_rejects_incomplete_boards():
     cols = [list(P001) for _ in range(4)]
     cols[1][2] = "missing"
     with pytest.raises(LayoutError, match="cable 2 row 3 has no clip"):
-        master_from_boxes(boxes_for(cols), (1280, 960), TAX)
-    cols = [list(P001) for _ in range(4)]
-    cols[0][0] = "small"
-    with pytest.raises(LayoutError, match="row 1"):
-        master_from_boxes(boxes_for(cols), (1280, 960), TAX)
-
-
-def test_master_mixed_orientation_becomes_group():
-    cols = [list(P001) for _ in range(4)]
-    cols[3][1] = "fork_right"
-    pattern, _, notes = master_from_boxes(boxes_for(cols), (1280, 960), TAX)
-    assert pattern[1] == "fork" and "orientation" in notes[0]
+        master_from_boxes(boxes_for(cols), (1280, 960))
 
 
 @pytest.fixture(scope="module")
 def layout():
-    return master_from_boxes(boxes_for([P001] * 4, seed=1), (1280, 960), TAX)[1]
+    return master_from_boxes(boxes_for([P001] * 4, seed=1), (1280, 960))[1]
 
 
 @pytest.mark.parametrize("shift,angle", [((0, 0), 0), ((20, 0), 0), ((-20, 20), 0), ((60, -45), 2.5), ((-35, 10), -3)])

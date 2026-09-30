@@ -1,68 +1,68 @@
-"""History & reports page: browse inspections, view evidence, daily report, export."""
+"""History: every inspection with its findings and saved image, the daily report, CSV / Excel export."""
 
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from tkinter import filedialog
+from tkinter import filedialog, ttk
 
-import customtkinter as ctk
-
-from ...capture.sources import read_image
-from ...pipeline import Station
-from ...storage import export_csv, export_excel
-from ..widgets import Card, ImageView, Table, button, muted, show_error, show_info
+from ...station.storage import export_csv, export_excel
+from ...vision.camera import read_image
+from ..widgets import ImageView, Table, card, set_text, show_error, show_info, text_box
 
 
-class HistoryPage(ctk.CTkFrame):
-    title = "History & reports"
-
-    def __init__(self, master, app, station: Station):
-        super().__init__(master, fg_color="transparent")
+class HistoryPage(ttk.Frame):
+    def __init__(self, master, app):
+        super().__init__(master, padding=8)
         self.app = app
-        self.station = station
-        self.store = station.store
+        self.store = app.station.store
         self.grid_columnconfigure(0, weight=3)
         self.grid_columnconfigure(1, weight=2)
         self.grid_rowconfigure(1, weight=1)
 
-        bar = Card(self)
-        bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14))
-        b = bar.body
+        bar = ttk.Frame(self)
+        bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         today = date.today().isoformat()
-        self.date_from = ctk.CTkEntry(b, width=120, height=36)
-        self.date_to = ctk.CTkEntry(b, width=120, height=36)
-        for e in (self.date_from, self.date_to):
-            e.insert(0, today)
-        self.part = ctk.CTkEntry(b, width=130, height=36, placeholder_text="any part")
-        self.result = ctk.CTkSegmentedButton(b, values=["All", "OK", "NG"], height=36, command=lambda _v: self.refresh())
+        ttk.Label(bar, text="From").pack(side="left")
+        self.date_from = ttk.Entry(bar, width=11)
+        self.date_from.insert(0, today)
+        self.date_from.pack(side="left", padx=(4, 10))
+        ttk.Label(bar, text="To").pack(side="left")
+        self.date_to = ttk.Entry(bar, width=11)
+        self.date_to.insert(0, today)
+        self.date_to.pack(side="left", padx=(4, 10))
+        ttk.Label(bar, text="Part").pack(side="left")
+        self.part = ttk.Entry(bar, width=12)
+        self.part.pack(side="left", padx=(4, 10))
+        ttk.Label(bar, text="Result").pack(side="left")
+        self.result = ttk.Combobox(bar, values=["All", "OK", "NG"], state="readonly", width=5)
         self.result.set("All")
-        for label, w in (("From", self.date_from), ("To", self.date_to), ("Part", self.part), ("Result", self.result)):
-            muted(b, label, 13).pack(side="left", padx=(0, 6))
-            w.pack(side="left", padx=(0, 16))
-        button(b, "Show", self.refresh, "primary", width=90).pack(side="left")
-        button(b, "Export Excel", lambda: self.export("xlsx"), "secondary", width=120).pack(side="right")
-        button(b, "Export CSV", lambda: self.export("csv"), "secondary", width=110).pack(side="right", padx=8)
+        self.result.pack(side="left", padx=(4, 10))
+        ttk.Button(bar, text="Show", style="Accent.TButton", command=self.refresh).pack(side="left")
+        ttk.Button(bar, text="Export Excel...", command=lambda: self.export("xlsx")).pack(side="right")
+        ttk.Button(bar, text="Export CSV...", command=lambda: self.export("csv")).pack(side="right", padx=6)
 
-        self.table = Table(self, [("id", "#", 55), ("ts", "Time", 150), ("part", "Part", 90), ("op", "Operator", 90),
-                                  ("result", "Result", 60), ("ng", "Findings", 70), ("ms", "ms", 55)])
-        self.table.grid(row=1, column=0, sticky="nsew", padx=(0, 14))
-        self.table.on_select(self.show_detail)
+        self.table = Table(self, [("id", "#", 50), ("ts", "Time", 140), ("part", "Part", 90), ("op", "Operator", 80),
+                                  ("result", "Result", 60), ("findings", "Findings", 70), ("ms", "ms", 50)],
+                           height=20, on_select=self.show_detail)
+        self.table.grid(row=1, column=0, sticky="nsew")
 
-        detail = Card(self, title="Inspection")
-        detail.grid(row=1, column=1, sticky="nsew")
-        detail.body.grid_columnconfigure(0, weight=1)
-        detail.body.grid_rowconfigure(0, weight=3)
-        detail.body.grid_rowconfigure(1, weight=2)
-        self.image = ImageView(detail.body, placeholder="Select an inspection")
+        right = ttk.Frame(self)
+        right.grid(row=1, column=1, sticky="nsew", padx=(8, 0))
+        right.grid_rowconfigure(0, weight=1)
+        right.grid_columnconfigure(0, weight=1)
+        self.image = ImageView(right, placeholder="Select an inspection")
         self.image.grid(row=0, column=0, sticky="nsew")
-        self.detail = ctk.CTkTextbox(detail.body, font=ctk.CTkFont(family="Consolas", size=12), wrap="none")
-        self.detail.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        self.detail = text_box(right, height=10)
+        self.detail.grid(row=1, column=0, sticky="ew", pady=(8, 0))
 
-        report = Card(self, title="Daily report", subtitle="For the 'To' date")
-        report.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(14, 0))
-        self.report = ctk.CTkTextbox(report.body, height=150, font=ctk.CTkFont(family="Consolas", size=12), wrap="none")
+        rep = card(self, "Daily report (for the 'To' date)")
+        rep.panel.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.report = text_box(rep, height=7)
         self.report.pack(fill="x")
+
+    def on_show(self) -> None:
+        self.refresh()
 
     def _range(self) -> tuple[datetime, datetime]:
         start = datetime.combine(date.fromisoformat(self.date_from.get().strip()), time.min)
@@ -77,13 +77,6 @@ class HistoryPage(ctk.CTkFrame):
             f["result"] = self.result.get()
         return f
 
-    @staticmethod
-    def _set_text(box: ctk.CTkTextbox, text: str) -> None:
-        box.configure(state="normal")
-        box.delete("1.0", "end")
-        box.insert("1.0", text)
-        box.configure(state="disabled")
-
     def refresh(self) -> None:
         try:
             start, end = self._range()
@@ -93,11 +86,12 @@ class HistoryPage(ctk.CTkFrame):
         rows = []
         for r in self.store.inspections(start, end, limit=3000, **self._filters()):
             findings = r["ng_count"] + r.get("extras_count", 0)
-            rows.append((str(r["id"]), (r["id"], str(r["ts"]).replace("T", " ")[:19], r["part_number"], r["operator_id"] or "-",
-                                        r["result"], findings or "-", f"{r['duration_ms']:.0f}"),
+            rows.append((str(r["id"]), (r["id"], str(r["ts"]).replace("T", " ")[:19], r["part_number"],
+                                        r["operator_id"] or "-", r["result"], findings or "-",
+                                        f"{r['duration_ms']:.0f}"),
                          ("ng",) if r["result"] == "NG" else ()))
         self.table.set_rows(rows)
-        self._set_text(self.report, self.store.daily_report((end - timedelta(days=1)).date()).as_text())
+        set_text(self.report, self.store.daily_report((end - timedelta(days=1)).date()).as_text())
 
     def show_detail(self, iid: str | None) -> None:
         row = self.store.get_inspection(int(iid)) if iid else None
@@ -110,14 +104,13 @@ class HistoryPage(ctk.CTkFrame):
             lines.append(f"error: {row['error']}")
         for p in self.store.positions(row["id"]):
             if not p["ok"]:
-                lines.append(f"  NG C{p['cable']}R{p['row']}: expected {p['expected']}, found {p['found']} "
+                lines.append(f"  NG cable {p['cable']} row {p['row']}: expected {p['expected']}, found {p['found']} "
                              f"({p['confidence']:.0%})  {p['reason']}")
         for e in self.store.extras(row["id"]):
-            lines.append(f"  NG unexpected {e['label']} ({e['confidence']:.0%}) at x={e['x'] + e['w'] / 2:.0f} "
-                         f"y={e['y'] + e['h'] / 2:.0f}")
+            lines.append(f"  NG unexpected {e['label']} ({e['confidence']:.0%})")
         if len(lines) == 3 and not row["error"]:
             lines.append("  all positions OK")
-        self._set_text(self.detail, "\n".join(lines))
+        set_text(self.detail, "\n".join(lines))
         path = row["image_path"]
         if path and Path(path).is_file():
             try:
@@ -125,7 +118,7 @@ class HistoryPage(ctk.CTkFrame):
                 return
             except Exception:
                 pass
-        self.image.clear("No image saved for this inspection\n(NG images are always saved; OK images every Nth)")
+        self.image.clear("No image saved for this inspection\n(NG images are always saved, OK images every Nth)")
 
     def export(self, kind: str) -> None:
         try:

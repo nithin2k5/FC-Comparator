@@ -1,106 +1,41 @@
 # FC-Comparator
 
-Vision inspection station for wire harness boards. An overhead camera photographs the harness cables laid out on a white
-board. The station finds every plastic clip, works out which cable and row each clip belongs to, and compares the result
-with the master of the scanned part number. When anything is wrong it raises an alert on screen, on a tower light and on a
-buzzer, and every result is logged.
+Vision inspection station for wire harness boards. An overhead camera photographs the harness cables laid out on the
+board. The station finds every plastic clip with a trained YOLO model, works out which cable and row each clip belongs
+to, and compares every position with the master of the scanned part number. When anything is wrong it shows **NG**,
+switches the tower light to red, sounds the buzzer, locks the station and logs the result.
 
-Everything is set up on one **Setup** page, in four steps:
+The UI is plain **tkinter** (part of Python). After logging in there are five tabs:
 
 ```
- 1 select / create part number ─► 2 upload images or capture from camera ─► 3 annotate clips ─► 4 train model
-                                                                                                        │
- scan P/N ─► capture ─► detect clips ─► place on the part's layout ─► compare ─► OK / NG ─► light, buzzer, lock, log
+ Training ─ images of boards + the clips marked on them ─► Train ─► clip detector (YOLO)
+ Parts    ─ photo of a good board ─► clips found ─► check ─► Save ─► master of part number
+ Inspect  ─ scan part number ─► INSPECT / foot pedal ─► OK / NG ─► tower light, buzzer, lock, log
+ History  ─ every inspection, its findings and image; daily report; CSV / Excel export
+ Settings ─ camera, detection, alerts, login and supervisor PIN
 ```
-
-One completely annotated good board of each part is its **reference board**: it defines the clip per row and where
-each clip sits, so many part numbers with different layouts are easy to handle.
 
 ## Contents
 
-1. [How it works](#1-how-it-works)
-2. [Installation](#2-installation)
-3. [Quick start with the sample data](#3-quick-start-with-the-sample-data)
-4. [Camera setup](#4-camera-setup)
-5. [Setting up a part](#5-setting-up-a-part)
-6. [Annotating tips](#6-annotating-tips)
-7. [Training the model](#7-training-the-model)
-8. [Operating the station](#8-operating-the-station)
-9. [Wiring the tower light, buzzer and foot pedal](#9-wiring-the-tower-light-buzzer-and-foot-pedal)
-10. [Logging, reports and export](#10-logging-reports-and-export)
-11. [Configuration](#11-configuration)
-12. [Command line](#12-command-line)
-13. [Tests](#13-tests)
-14. [Performance](#14-performance)
-15. [Troubleshooting](#15-troubleshooting)
+1. [Installation and first start](#1-installation-and-first-start)
+2. [Project layout](#2-project-layout)
+3. [Clip types and the training data](#3-clip-types-and-the-training-data)
+4. [Training tab](#4-training-tab)
+5. [Parts tab](#5-parts-tab)
+6. [Inspect tab](#6-inspect-tab)
+7. [History, reports and export](#7-history-reports-and-export)
+8. [Settings and configuration](#8-settings-and-configuration)
+9. [Camera setup](#9-camera-setup)
+10. [Wiring the tower light, buzzer and foot pedal](#10-wiring-the-tower-light-buzzer-and-foot-pedal)
+11. [Command line](#11-command-line)
+12. [Tests](#12-tests)
+13. [Troubleshooting](#13-troubleshooting)
 
 ---
 
-## 1. How it works
-
-**Clip types.** The detector learns a configurable list of clip types (Settings → Clip types). The defaults are `round`,
-`fork_left`, `fork_right` and `small`. A fork is marked with the direction its open side faces. Two extra kinds of setting
-extend the list:
-
-* **Groups** let one expected label accept several types. For example `fork = fork_left, fork_right` means a pattern
-  that says `fork` doesn't care about the direction.
-* **Mirror pairs** say that two types are left/right mirror images, so every marked `fork_left` also teaches
-  `fork_right`.
-
-**Detectors.**
-
-* **Template matching** is used from the first few marked images. Your marked boxes are the templates. The station also
-  samples and *mines* "not a clip" patches from your images, such as bare cable, connectors and board marks. These
-  compete as a background class, so bare cable isn't mistaken for a clip. With 4 marked boards it found every clip on
-  unseen, shifted boards with no false positives.
-* **YOLO (Ultralytics YOLO11)** is trained on the marked images (§7). It is faster and more robust on real photos.
-  `detector.backend: auto` switches to the trained model only once its validation accuracy reaches
-  `detector.min_model_accuracy` (95%). After training you can still choose to use a weaker model; the reason is shown
-  in the sidebar.
-
-**Automatic layout.** A part's master image records where each clip sits (cable, row). At inspection the detected clips
-are fitted onto that layout:
-
-* A translation vote handles board shifts.
-* A rotation/scale fit uses only clips of the expected type, so wrong clips can't pull it off.
-* Optimal assignment pairs clips with positions.
-* Positions with no clip are **missing**. Confident clips where the master has none are **unexpected**.
-* A board that doesn't fit the layout is reported as a **likely wrong part**.
-
-Parts that have only a typed pattern and no master image still work: clips are grouped into columns and rows
-automatically.
-
-**Never OK:** a missing clip, a clip below `detector.confidence_threshold` (reported as *uncertain*, with the detector's
-guess), an unexpected clip in the clip area, a board that can't be placed, an unknown part number, or a detector error.
-
-**Project layout**
-
-```
-fc_comparator/
-  models.py        Taxonomy (clip types), Box, Layout, PartNumber, PositionResult, InspectionReport
-  config.py        typed YAML config (every setting, clip types and part numbers in one file)
-  annotations.py   store of uploaded images and the boxes marked on them
-  layout.py        grid inference, master from a marked board, layout fitting
-  parts.py         part number from a marked good image
-  detect/          template-matching detector, YOLO detector, auto selection with the accuracy guard
-  training.py      YOLO data-set export (with fork mirroring), training, evaluation + confusion matrix
-  compare/         master (A), cross-cable majority (B), both
-  pipeline.py      Inspector (image → report) and Station (capture, alert, lock, logging)
-  capture/ alert/ storage/ annotate.py barcode.py security.py synthetic.py cli.py
-  ui/              CustomTkinter station UI (pages/ incl. setup.py, annotation canvas in annotator.py)
-scripts/           train_detector.py, make_samples.py
-config/config.yaml sample configuration with three parts
-samples/           marked sample images, test boards + manifest (synthetic)
-tests/             unit, end-to-end and UI tests
-```
-
----
-
-## 2. Installation
+## 1. Installation and first start
 
 Requires Python 3.11 or newer. Everything runs offline once installed.
-
-### Windows / Linux PC
 
 ```bash
 git clone https://github.com/nithin2k5/FC-Comparator.git
@@ -108,191 +43,190 @@ cd FC-Comparator
 python -m venv .venv
 .venv\Scripts\activate            # Linux: source .venv/bin/activate
 pip install -r requirements.txt
+python main.py
 ```
 
-### Raspberry Pi 5 (Raspberry Pi OS Bookworm, 64-bit)
+On Linux / Raspberry Pi OS also install Tk: `sudo apt install python3-tk`. On the Pi, add your user to the `gpio`,
+`video` and (for USB relays) `dialout` groups.
 
-```bash
-sudo apt install -y python3-venv python3-tk python3-opencv libgl1
-python3 -m venv --system-site-packages .venv      # reuses the system gpiozero / lgpio
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+**Login:** username **nice**, password **nice1234**. The supervisor PIN (to release an NG lock) is **1234**. Change both
+under Settings → Security before production.
 
-On the Pi, add your user to the `gpio`, `video` and (for USB relays) `dialout` groups. Training a YOLO model on a Pi is
-very slow. Train on a PC and copy `models/clip_detector.pt` together with its `_report.json`.
-
-### Offline stations
-
-On a connected machine run `pip download -r requirements.txt -d wheels`. Copy the `wheels/` folder across and run
-`pip install --no-index --find-links wheels -r requirements.txt`. For training with pretrained weights, also copy
-`yolo11n.pt` into the program folder (§7).
+**Offline stations.** Put `yolo11n.pt` (the pretrained base for training) into `models/`; otherwise Ultralytics
+downloads it the first time you train. Trained weights are `models/clip_detector.pt`.
 
 ---
 
-## 3. Quick start with the sample data
-
-The sample config uses the `file` source and synthetic data in `samples/`:
-
-* 9 marked images, including a master for each of P001, P002 and P003
-* 14 test boards, listed with their expected results in `samples/manifest.yaml`
-
-```bash
-python main.py                     # start the station UI
-python main.py check               # validate config, marked data, detector and camera
-python main.py inspect --image samples/boards/board_P001_mixed.jpg --part P001 --out annotated.jpg
-```
+## 2. Project layout
 
 ```
-NG  part=P001  357 ms  detector=template
-placement: matched 16/16 (shift 2px, rotation 0.1 deg)
-  NG cable 3 row 1: expected round, found fork_right (100%) - fork_right != round
-  NG cable 3 row 2: expected fork_left, found fork_right (100%) - wrong orientation: fork_right != fork_left
-  NG cable 3 row 4: expected round, found fork_right (100%) - fork_right != round
-```
-
-In the UI, use **Load image…** on the Inspect page to try any board from `samples/boards/`.
-
-Default secrets are setup password **5678** and supervisor PIN **1234**. Change both before production, under Settings →
-Security.
-
-`python main.py …` and `python -m fc_comparator …` are equivalent.
-
----
-
-## 4. Camera setup
-
-1. **Mounting.** Mount the camera rigidly overhead, with the lens parallel to the board. A board fixture (end stops) keeps
-   shifts small. The layout fit accepts up to `layout.max_shift_px` (200 px) and `layout.max_rotation_deg` (8°).
-2. **Lighting.** Use diffuse, even light, such as LED panels at 45° or a ring light. Avoid glare on the clips and
-   changing daylight.
-3. **Resolution.** Clips should be at least about 40 px across in the image. 1920×1080 over a 60 cm board is plenty.
-4. **Fixed settings.** Turn autofocus off and fix focus and exposure (Settings → Station & camera, or `camera.*` in the
-   config). Keep the same camera settings for the images you mark and the boards you inspect.
-5. Run `python main.py check` and watch the live preview on the Inspect page.
-
-**Inspect** and **Capture from camera** always use a frame captured after the button press, never a stale buffered one. A disconnected camera
-reconnects automatically and the fault is shown on screen.
-
----
-
-## 5. Setting up a part
-
-Open **Setup** in the sidebar (setup password). Work through the four numbered cards:
-
-1. **Part number.** Pick the part from the list, or press **+ New** and enter the part number and a description.
-2. **Images.** Add photos of this part's boards with **+ Images** or **+ Folder**, or press **Capture from camera**:
-   a live view opens, and every **Capture** (or Space) adds a fresh frame. New images belong to the selected part.
-   Duplicates are skipped. *This part / All parts* switches the list.
-3. **Annotate.** Select an image, pick the clip type (or press **1–9**) and drag a box around every clip. Markings save
-   automatically. On one complete known-good board press **Use as reference board**: the station works out the cables
-   and rows, shows which clip became which position (C1 R1 …) and saves the part. From then on it can be inspected.
-   The reference image is marked ★ in the list.
-4. **Train & detect.** Press **Train model**. Training runs in the background with progress and can be stopped. One
-   model is trained on the annotated images of *all* parts, because the clip types are shared. When it finishes the
-   station detects with the new model. If validation accuracy is below `detector.min_model_accuracy` (95%) you are
-   asked whether to use it anyway; otherwise the station keeps template matching.
-
-Until a model is trained the station already detects with **template matching** on your annotations, so a part can be
-inspected as soon as it has a reference board.
-
-When you leave Setup, the Inspect page switches to the part you just set up.
-
-Command-line equivalent:
-
-```bash
-python main.py add-images photos/P004/ --part P004 --good     # then annotate them in Setup
-python main.py make-master --image-id <id> --part P004 --description "Harness D"
-python main.py train
+main.py                    entry point:  python main.py [command]
+config/config.yaml         the station's settings, clip types and part numbers
+dataset/                   training data: images/ + index.json (the clips marked on every image)
+models/                    clip_detector.pt (+ _report.json, _confusion.png), yolo11n.pt   [not in git]
+data/                      inspections.db and evidence images                               [not in git]
+fc_comparator/
+  config.py                typed YAML configuration
+  cli.py                   command line
+  core/                    pure logic, no I/O
+    models.py              clip types (taxonomy), Box, Layout, PartNumber, inspection results
+    layout.py              cables x rows grid, master from a good board, fitting a master onto a new photo
+    compare.py             found vs expected at every position
+    parts.py               part number from the clips of a good board
+  vision/                  images and clip detection
+    camera.py              OpenCV camera / image file sources
+    dataset.py             training images + marked boxes (dataset/)
+    detect/                YOLO detector, template-matching fallback, detector selection
+    training.py            YOLO data-set export (with mirroring), training, evaluation
+    drawing.py             OK/NG boxes drawn on the result image
+    synthetic.py           synthetic boards for the tests
+  station/                 the inspection station
+    inspector.py           image -> detect -> place -> compare -> report
+    station.py             capture + inspector + alert + NG lock + logging
+    lock.py security.py barcode.py
+    alerts/                tower light / buzzer: GPIO, USB relay, Modbus TCP, console
+    storage/               SQLite history, evidence images, CSV / Excel export
+  ui/                      tkinter UI
+    app.py login.py main_window.py style.py widgets.py box_editor.py
+    pages/                 inspect.py parts.py training.py history.py settings.py
+scripts/make_test_fixtures.py   regenerates tests/fixtures (synthetic boards)
+tests/                     unit, end-to-end and UI tests; tests/fixtures = synthetic boards + their config
 ```
 
 ---
 
-## 6. Annotating tips
+## 3. Clip types and the training data
 
-| action | how |
+The FCC boards carry four cables with four clip rows each. Five kinds of clip occur, and the forks can face either way,
+so the detector learns eight classes:
+
+| class | clip |
 |---|---|
-| draw a box | drag on an empty area |
-| select / move / resize | click a box, drag it, drag its handles |
-| change a box's type | select it, press 1–9 or click the type |
-| delete / undo | Del / Ctrl+Z |
-| zoom / pan | mouse wheel / right-drag, **Fit** button or F |
-| previous / next image | ← / → (with no box selected) |
+| `round` | black round push clip (some with side ears) |
+| `small` | small black arrow push clip |
+| `fork_left` / `fork_right` | black U-bracket with push pin; the side its open end faces |
+| `grey_fork_left` / `grey_fork_right` | the same bracket in grey plastic (black pin) |
+| `metal_fork_left` / `metal_fork_right` | silver metal bracket with a square pin holder |
 
-* Mark **every** clip on an image: unmarked clips teach the detector "this is not a clip".
-* **Auto-mark** pre-marks an image with the current detector. Check every box, fix types, delete wrong ones and draw
-  the missed ones. This makes annotating many images much faster.
-* Annotate boards of every part, both fork directions, boards shifted on the fixture, and some with missing clips
-  (mark only the clips that are there). About 20 clips per type is enough to start; aim for 50 or more per type
-  before training. The Train card shows the counts.
+A part's master may also say just `fork`, `grey_fork` or `metal_fork`: either direction is then accepted.
+Clip types are listed in `config.yaml` (`taxonomy`); a new type needs marked examples and a new training run.
 
----
+**The data set** (`dataset/`) holds the 20 FCC board photos (`board_01` … `board_20`, 1204×1600). Every clip on every
+photo is marked — 320 clips: round 147, small 44, black fork 90, metal fork 22, grey fork 17. In these photos every
+black and metal fork faces right and every grey fork left; training adds a mirrored copy of each photo with left/right
+swapped, so both directions are learned. YOLO's own random flip is switched off because it would keep the wrong
+direction label.
 
-## 7. Training the model
-
-Step 4 of the Setup page trains the model (see §5). Base model and training image size are in Settings → Detection →
-Training (YOLO11 nano and 960 px by default; use 1280 px for small clips).
-
-* Training exports the annotated images as a YOLO data set with a per-image train/validation split. Every image with
-  forks is also added mirrored, with `fork_left` and `fork_right` swapped. YOLO's own random flip is turned off,
-  because it would keep the wrong direction label.
-* The results are saved next to the model as `clip_detector_report.json` and `clip_detector_confusion.png`.
-* A model at or above `detector.min_model_accuracy` is used automatically (`detector.backend: auto`). Choosing
-  *Use model* for a weaker one sets `detector.backend: yolo`; set it back to `auto` in Settings to return to the
-  accuracy guard.
-
-Command line (same result):
-
-```bash
-python scripts/train_detector.py --epochs 100 --imgsz 960
-python main.py evaluate            # score the current detector on the marked images
-```
-
-**Offline.** The pretrained `yolo11n.pt` is downloaded on first use. On offline stations, copy it into the program
-folder beforehand. Otherwise choose *from scratch*, which needs more images and epochs.
-
-**What to expect.** On the synthetic samples (16 marked boards, CPU, 640 px):
-
-* After 30 epochs, the model found the right clips but with low confidence. Median confidence was 0.41, so most clips
-  would have been "uncertain", and the accuracy guard correctly kept template matching.
-* After 100 epochs (26 minutes), it found **every clip on 6 unseen boards with no misses and no false clips** at the
-  station's 0.6 confidence threshold.
-
-Real photos vary more, so mark more images.
+The flat black strip below the connector of cable 2 on most photos belongs to the fixture and is intentionally not
+marked.
 
 ---
 
-## 8. Operating the station
+## 4. Training tab
 
-**Inspect page**
+* **Add images…**, **Add folder…** or **Capture from camera** add photos to the data set (duplicates are skipped).
+* Select an image and mark **every** clip: choose the clip type (or press 1–9), drag a box around the clip. Click a box
+  to select it, drag to move, drag the handles to resize, Delete removes it, Ctrl+Z undoes. Mouse wheel zooms,
+  right-drag pans, ← / → go to the previous / next image. Everything is saved automatically.
+* **Find clips** pre-marks an image with the current model — only corrections are needed. This makes adding new
+  photos fast once a model exists.
+* **Train** trains in the background (progress and log on the right; **Stop** ends it early). 20 % of the images are
+  held back for validation. The new model is used when its validation accuracy (clips found with the right type at the
+  confidence threshold) reaches `detector.min_model_accuracy` (95 %); otherwise the station keeps the previous detector.
+  The report is written next to the model (`clip_detector_report.json`, `clip_detector_confusion.png`).
 
-1. **Choose the part.** Scan the part-number barcode, or type a part number and press Enter, or press **Choose…** to
-   search the part list. The part's pattern is shown as coloured chips. Scanning a badge `OP:1234` sets the operator.
-   The barcode format is configurable (`barcode.part_pattern`, named group `part`).
-2. **Inspect.** Press **INSPECT**, the configured key (default F9; most USB foot pedals can send a key), or the GPIO foot
-   pedal.
-3. **Read the result.** A large **OK** or **NG** banner appears with the annotated image:
-   * **green** boxes: correct positions
-   * **red** boxes with `found ≠ expected`: wrong clips
-   * **dashed red** boxes: missing clips
-   * **orange** boxes: unexpected clips
+Unmarked clips teach the model "this is not a clip", so mark images completely. More photos — shifted boards, other
+lighting, both fork directions, boards with missing clips (mark only what is there) — make the model more robust.
 
-   The **Findings** list spells each problem out, for example "C3 · R2: found fork_right, expected fork_left".
+**Current model:** MODEL_RESULTS
 
-**Comparison modes** (`compare.mode`):
-
-* `master` (default) compares against the part's pattern.
-* `cross` requires all cables in a row to match each other: the majority is the reference, and without a strict
-  majority the whole row is flagged.
-* `both` requires a position to pass both checks.
-
-**NG lock.** After an NG the station locks. The part can't be changed and the setup pages are disabled until either a
-re-inspection of the same part passes, or a supervisor presses **Supervisor acknowledge** and enters the PIN. Both are
-logged; wrong PINs too.
+Command line: `python main.py train --epochs 120` and `python main.py evaluate`.
 
 ---
 
-## 9. Wiring the tower light, buzzer and foot pedal
+## 5. Parts tab
+
+A part number's **master** says which clip belongs at every position (cable × row) and where the positions are.
+
+1. **New from photo…** (or **New from camera**): take a photo of a known-good board of the part.
+2. The model finds the clips and the editor shows them, with the resulting pattern on the right
+   ("4 cables x 4 rows", row by row, cable by cable). Fix any box the same way as on the Training tab.
+   **Save part** stays disabled until every position has exactly one clip.
+3. Enter the part number (the text on its barcode) and a description, **Save part**.
+
+The photo and its boxes are also added to the training data. **Edit** reopens a part's master photo; **Delete** removes
+the part number.
+
+Command line: `python main.py add-part --image good_board.jpg --part P123 --description "..."`.
+
+---
+
+## 6. Inspect tab
+
+1. **Part number.** Scan the barcode into the part box (the scanner types the code + Enter), or pick from the list.
+   Scanning an operator badge `OP:1234` fills the operator. The barcode format is `barcode.part_pattern`.
+2. **INSPECT**, the trigger key (F9 — most USB foot pedals can send a key) or the GPIO foot pedal. **Inspect an image
+   file…** runs the same inspection on a saved photo.
+3. **Result.** The big banner shows **OK** or **NG**; the photo shows green boxes for correct clips, red boxes with
+   `found ≠ expected` for wrong clips, dashed red for missing clips and orange for unexpected clips. The table lists
+   every position, problems first.
+
+**Never OK:** a missing clip, a clip found with less than `detector.confidence_threshold` confidence (*unsure*), a clip
+where the master has none, a board that does not fit the part's layout (wrong part / board out of view), an unknown
+part number, or a detector error.
+
+**NG lock.** After an NG the station locks: the part can't be changed and the Parts, Training and Settings tabs are
+disabled until a re-inspection of the same part passes or a supervisor presses **Supervisor unlock (PIN)**. Both are
+logged, wrong PINs too.
+
+---
+
+## 7. History, reports and export
+
+* Every inspection is stored in SQLite (`storage.database`): time, station, operator, part, result, duration, detector,
+  placement, and every position with expected / found clip and confidence.
+* The annotated image of every NG is saved (`storage.image_dir/YYYY-MM-DD/…`), plus every Nth OK image
+  (`storage.save_ok_every_n`).
+* **History tab:** filter by date, part and result; view the image and findings; export CSV or Excel; daily report
+  (totals, NG rate, per part, most frequent failing positions, supervisor unlocks).
+* Command line: `python main.py report --day 2026-09-30`, `python main.py export --out history.xlsx --from … --to …`.
+
+---
+
+## 8. Settings and configuration
+
+The Settings tab edits the everyday settings; everything lives in `config/config.yaml` (written atomically; relative
+paths are resolved from the config file's folder).
+
+| key | meaning |
+|---|---|
+| `camera.*` | `source` (`camera` or `file`), camera number, resolution, `file_path` for the file source |
+| `detector.backend` | `auto` (trained model if accurate enough, else template matching), `yolo`, `template` |
+| `detector.confidence_threshold` | below this a clip is *unsure* (NG); default 0.6 |
+| `detector.min_model_accuracy` | validation accuracy a trained model needs before `auto` uses it; 0.95 |
+| `layout.*` | match tolerance (clip sizes), max board shift (px) and rotation (deg) |
+| `dataset.dir` | training images and marks |
+| `training.*` | base model, epochs, image size, batch, validation split, mirroring |
+| `taxonomy.*` | clip types, groups (`fork`), mirror pairs |
+| `alert.*` | tower light backend and its hardware settings (§10) |
+| `security.*` | login user + password hash, supervisor PIN hash, lock after NG |
+| `storage.*`, `barcode.*`, `trigger.*`, `ui.*` | as named |
+| `parts.<code>` | `description`, `pattern` (rows top to bottom, each a list of clips per cable), `layout`, `master_image` |
+
+---
+
+## 9. Camera setup
+
+1. Mount the camera rigidly overhead, lens parallel to the board. A fixture with end stops keeps shifts small; the
+   layout fit accepts up to `layout.max_shift_px` (200 px) and `layout.max_rotation_deg` (8°).
+2. Diffuse, even light (LED panels at 45° or a ring light); avoid glare on the metal forks and changing daylight.
+3. Clips should be at least ~30 px across in the image.
+4. Turn autofocus off and keep focus / exposure fixed; use the same camera settings for training photos and inspection.
+5. Run `python main.py check`, then watch the live image on the Inspect tab.
+
+---
+
+## 10. Wiring the tower light, buzzer and foot pedal
 
 Select the backend in Settings → Alerts (`alert.backend`). The station drives three outputs: **green lamp**, **red
 lamp** and **buzzer**.
@@ -300,8 +234,8 @@ lamp** and **buzzer**.
 | Event | green | red | buzzer |
 |---|---|---|---|
 | OK | on | off | off |
-| NG | off | on | on for `buzzer_seconds` (`pulse`), or until acknowledged (`until_ack`) |
-| acknowledged / idle | off | off | off |
+| NG | off | on | on for `buzzer_seconds` (`pulse`), or until unlocked (`until_ack`) |
+| unlocked / idle | off | off | off |
 
 **Settings → Alerts → Test tower light** cycles green, then red with buzzer, then off.
 
@@ -322,145 +256,81 @@ transistor/MOSFET driver board. A typical 24 V DC tower light with a common wire
  GPIO26 (pin 37) ─── foot pedal (NO contact) ─── GND (pin 39)     # trigger.gpio_pin: 26
 ```
 
-* Most relay modules are **active-low**, meaning the relay clicks when the input goes to 0 V. For those, turn off
-  *Active high*, and check with **Test tower light**.
+* Most relay modules are **active-low** (the relay clicks when the input goes to 0 V): set `alert.gpio.active_high:
+  false` and check with **Test tower light**.
 * The pedal input uses the Pi's internal pull-up with 50 ms debounce.
 * Keep the 24 V wiring physically separate from the Pi, and fuse the 24 V supply.
 
 ### b) USB relay board (`usb_relay`)
 
-This backend supports CH340-based "LCUS" serial relay boards with 1, 2, 4 or 8 channels (protocol
-`A0 <ch> <state> <sum>`). The board appears as `COMx` on Windows or `/dev/ttyUSB0` on Linux. Set the port and channel
-numbers, and wire each relay's COM/NO contact as above.
+CH340-based "LCUS" serial relay boards with 1, 2, 4 or 8 channels (protocol `A0 <ch> <state> <sum>`). The board appears
+as `COMx` on Windows or `/dev/ttyUSB0` on Linux. Set the port and channel numbers, and wire each relay's COM/NO contact
+as above.
 
 ### c) Modbus TCP PLC (`modbus`)
 
 The station writes three coils with function 05 (Write Single Coil) on `host:port`, unit `unit_id`: `green_coil`,
-`red_coil` and `buzzer_coil` (0-based addresses). The PLC program maps these coils to its outputs, or uses them for
-interlocks such as stopping a conveyor while red is set. Lamps are switched off before the new one is switched on, so
-green and red never light together. The connection is kept open and reconnects automatically.
+`red_coil` and `buzzer_coil` (0-based). Lamps are switched off before the new one is switched on, so green and red never
+light together. The connection is kept open and reconnects automatically.
 
 ### d) Console / none
 
-`console` logs every output change, for development. `none` does nothing.
+`console` logs every output change (development). `none` does nothing.
 
-Hardware errors never crash an inspection or turn an NG into an OK. They appear as **ALERT FAULT** on the Inspect page
-and in the log.
-
----
-
-## 10. Logging, reports and export
-
-* **Every inspection** is written to SQLite (`storage.database`). Each record holds:
-  * timestamp, station, operator, part number, mode, result, duration and detector
-  * placement details (shift, message)
-  * every position with expected and found clip, confidence and box
-  * every unexpected clip
-
-  Older databases are migrated automatically.
-* **Evidence images.** The annotated image of every NG is saved as
-  `storage.image_dir/YYYY-MM-DD/HHMMSS_<id>_<part>_NG.jpg`, plus every Nth OK image (`storage.save_ok_every_n`).
-* **History & reports page.**
-  * Filter by date, part and result.
-  * View the stored image and all findings of an inspection.
-  * Export to CSV or Excel.
-  * See the daily report: totals, NG rate, results per part, most frequent failing positions and failure kinds, and the
-    number of supervisor acknowledgements.
-* **Command line:** `python main.py report --day 2026-09-29`, `python main.py export --out history.xlsx --from … --to …`.
+Hardware errors never crash an inspection or turn an NG into an OK; they appear as **ALERT FAULT** on the Inspect tab and
+in the log.
 
 ---
 
-## 11. Configuration
-
-All settings live in `config/config.yaml` and are edited from the Settings page. The file is written atomically, and
-relative paths are resolved from the config file's folder.
-
-| key | meaning |
-|---|---|
-| `taxonomy.classes / groups / mirror` | clip types, groups such as `fork`, and mirror pairs |
-| `detector.backend` | `auto` (trained model if accurate enough, else templates), `yolo`, `template` |
-| `detector.confidence_threshold` | below this a clip is *uncertain* (NG); default 0.6 |
-| `detector.min_model_accuracy` | validation accuracy a trained model needs before `auto` uses it; 0.95 |
-| `detector.template.*` | template scale, templates per class, negatives, minimum correlation |
-| `layout.*` | match tolerance (clip sizes), max shift (px) and rotation (deg) |
-| `annotations.dir` | where uploaded images and marks are stored |
-| `training.*` | base model, epochs, image size, batch, validation split, mirroring |
-| `compare.mode` | `master`, `cross`, `both` |
-| `camera.*`, `alert.*`, `security.*`, `storage.*`, `barcode.*`, `trigger.*`, `ui.*` | as named |
-| `parts.<code>` | `description`, `cables`, `pattern` (clip per row) and, from a master image, `layout` + `master_image` |
-
----
-
-## 12. Command line
+## 11. Command line
 
 ```
 python main.py [-c config.yaml] [gui]                  start the station UI (default)
 python main.py inspect --image F --part P [--out A.jpg] [--no-store] [-v]   exit code 0 = OK, 1 = NG
-python main.py add-images PATH... [--part P] [--good]  upload images for marking
-python main.py make-master --image-id ID --part P      part pattern + layout from a marked good board
-python main.py train [--epochs N] [--imgsz N] [--base yolo11n.pt]
+python main.py add-images PATH... [--part P] [--good]  add photos to the training data set
+python main.py add-part --image F --part P [--description D]      part master from a photo of a good board
+python main.py add-part --image-id ID --part P         part master from a marked data-set image
+python main.py train [--epochs N] [--imgsz N] [--base yolo11n.pt] [--device cpu|0]
 python main.py evaluate                                score the current detector on the marked images
 python main.py report [--day YYYY-MM-DD]
 python main.py export --out F.csv|F.xlsx [--from D] [--to D]
-python main.py set-secret --pin | --setup
-python main.py check
-python scripts/make_samples.py                         regenerate samples/ and the sample parts
+python main.py set-secret --pin | --login [--user NAME]
+python main.py check                                   validate config, data set, detector and camera
 ```
 
 ---
 
-## 13. Tests
+## 12. Tests
 
 ```bash
 pytest                   # everything (about 3 minutes)
-pytest -m "not slow"     # skip the YOLO training test
-pytest -m "not ui"       # skip the UI tests (e.g. on a headless machine)
+pytest -m "not slow"     # skip the short YOLO training test
+pytest -m "not ui"       # skip the UI tests (headless machines)
 ```
 
-* `test_e2e.py` runs every sample board through the full station and checks the exact findings. It also covers:
-  * shifted boards, missing and uncertain clips, and parts without a master layout
-  * the NG lock, logging and evidence images, and CLI exit codes
-  * a complete **new part set up from a marked image**
-* `test_layout.py` covers grid inference, masters from marked boards, and layout fitting under shift/rotation with
-  missing, extra and wrong clips.
-* `test_detect.py` covers template detection accuracy on unseen boards, fork direction, missing and covered clips, speed,
-  and the accuracy guard against under-trained models.
-* `test_training.py` covers data-set export with mirroring, evaluation and the confusion matrix, and a short real YOLO
-  training run.
-* `test_ui.py` drives the real window: scan, inspect, NG lock, and the whole Setup flow (new part, upload, marking
-  boxes with the mouse, reference board, training), plus settings including renaming clip types.
-* Also: `test_compare.py`, `test_annotations.py`, `test_alert.py` (fake GPIO, serial port and PLC), `test_storage.py`
-  (including the database migration), `test_config.py`, `test_capture.py` and `test_barcode.py`.
+The tests use synthetic boards (`tests/fixtures`, regenerate with `python scripts/make_test_fixtures.py`) so they run
+without the trained model.
+
+* `test_e2e.py` runs every fixture board through the full station and checks the exact findings; also shifted boards,
+  missing / unsure clips, parts without a master photo, NG lock, logging, evidence images, CLI and a new part set up
+  from a marked image.
+* `test_ui.py` drives the real tkinter window: login / logout, scanning, inspection, NG lock and supervisor unlock,
+  history, a new part from a good board (fixing a missed clip in the editor), marking boxes with the mouse, training,
+  settings, login and PIN changes.
+* `test_compare.py`, `test_layout.py`, `test_detect.py`, `test_training.py`, `test_annotations.py`, `test_alert.py`
+  (fake GPIO, serial port and PLC), `test_storage.py`, `test_config.py`, `test_capture.py`, `test_barcode.py`.
 
 ---
 
-## 14. Performance
-
-Measured on an Intel i5-13420H laptop, CPU only, 1280×960 boards:
-
-| step | time |
-|---|---|
-| template detector, whole board (≈40 templates + 20 negatives at 0.35 scale) | ~200–300 ms |
-| trained YOLO11n detector, whole board at 640 px | ~85 ms |
-| layout fit + compare + annotate | < 20 ms |
-| template detector rebuild after marking changes (runs in the background) | ~4 s |
-| YOLO training, 16 images, 100 epochs, 640 px | ~26 min |
-
-The alert fires as soon as the verdict is known, before the image is annotated or saved. A Raspberry Pi 5 has not been
-measured. Expect roughly 3–4× the PC inference times, which is still within the 1 s budget with a trained model. If it
-runs tight, lower `detector.imgsz` or export the model to NCNN/ONNX.
-
----
-
-## 15. Troubleshooting
+## 13. Troubleshooting
 
 | symptom | fix |
 |---|---|
 | "placement failed: only N/M clips fit" | wrong part on the board, board outside the view, or shifted beyond `layout.max_shift_px` |
 | "board does not match … wrong part?" | the clips found belong to another part number |
-| many *uncertain* positions | mark more images of that clip type and retrain; check focus and lighting |
-| a clip type is confused with another | mark more examples of both; check the confusion matrix on the Train page |
-| sidebar says the model reached only N% accuracy | mark more images or train longer; the station keeps template matching meanwhile |
-| false clips on connectors or cable | make sure marked images are *completely* marked; add images showing those areas |
-| `ALERT FAULT` on screen | check the relay port / PLC address; use Settings → Alerts → Test tower light |
-| forgot the setup password | `python main.py set-secret --setup` on the station PC |
+| many *unsure* positions | add and mark more photos of that clip type, train again; check focus and lighting |
+| two clip types are confused | mark more examples of both; see `models/clip_detector_confusion.png` |
+| "Save part" stays disabled | a position has no box or two boxes; the pattern panel says which |
+| status bar says template matching | no trained model yet, or it is below `detector.min_model_accuracy` — train (longer) |
+| `ALERT FAULT` on screen | check the relay port / PLC address; Settings → Alerts → Test tower light |
+| forgot the login password | `python main.py set-secret --login` on the station PC |

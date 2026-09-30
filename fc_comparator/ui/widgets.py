@@ -1,9 +1,4 @@
-"""Reusable widgets: cards, image view, verdict banner, dialogs, part picker, tables.
-
-tkinter is not thread-safe: worker threads (inspection, training, detector
-rebuilds, GPIO pedal, lock listeners) never touch widgets. They hand callables
-to ``Dispatcher``, which runs them on the Tk main loop.
-"""
+"""Small building blocks shared by the pages (plain tkinter/ttk, no image libraries besides OpenCV)."""
 
 from __future__ import annotations
 
@@ -12,20 +7,18 @@ import queue
 import threading
 import tkinter as tk
 from collections.abc import Callable, Sequence
-from tkinter import ttk
+from tkinter import messagebox, simpledialog, ttk
 
-import customtkinter as ctk
 import cv2
 import numpy as np
-from PIL import Image
 
-from . import theme
+from . import style
 
 log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Threading
+# Threads -> Tk main loop
 # ---------------------------------------------------------------------------
 class Dispatcher:
     """Run callables on the Tk main loop; ``call`` is safe from any thread."""
@@ -61,7 +54,7 @@ class Dispatcher:
 
     def run_task(self, fn: Callable[[], object], on_done: Callable[[object], None],
                  on_error: Callable[[BaseException], None]) -> threading.Thread:
-        """Run ``fn`` on a worker thread; deliver the result/exception on the main loop."""
+        """Run ``fn`` on a worker thread; deliver the result or exception on the main loop."""
 
         def worker():
             try:
@@ -78,131 +71,74 @@ class Dispatcher:
 
 
 # ---------------------------------------------------------------------------
-# Layout helpers
-# ---------------------------------------------------------------------------
-class Card(ctk.CTkFrame):
-    """A rounded surface with an optional title; put children into ``.body``."""
-
-    def __init__(self, master, title: str = "", subtitle: str = "", **kw):
-        super().__init__(master, fg_color=theme.SURFACE, corner_radius=14, border_width=1,
-                         border_color=theme.BORDER, **kw)
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
-        if title:
-            head = ctk.CTkFrame(self, fg_color="transparent")
-            head.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 4))
-            ctk.CTkLabel(head, text=title, font=theme.font(15, "bold"), text_color=theme.TEXT, anchor="w").pack(anchor="w")
-            if subtitle:
-                ctk.CTkLabel(head, text=subtitle, font=theme.font(12), text_color=theme.MUTED, anchor="w",
-                             justify="left", wraplength=520).pack(anchor="w")
-        self.body = ctk.CTkFrame(self, fg_color="transparent")
-        self.body.grid(row=1, column=0, sticky="nsew", padx=16, pady=(4 if title else 14, 14))
-
-
-def page_header(master, title: str, subtitle: str = "") -> ctk.CTkFrame:
-    f = ctk.CTkFrame(master, fg_color="transparent")
-    ctk.CTkLabel(f, text=title, font=theme.font(24, "bold"), text_color=theme.TEXT, anchor="w").pack(anchor="w")
-    if subtitle:
-        ctk.CTkLabel(f, text=subtitle, font=theme.font(13), text_color=theme.MUTED, anchor="w").pack(anchor="w")
-    return f
-
-
-def button(master, text: str, command=None, kind: str = "secondary", **kw) -> ctk.CTkButton:
-    """kind: primary | secondary | danger | success | ghost"""
-    styles = {
-        "primary": dict(fg_color=theme.ACCENT, hover_color=theme.ACCENT_HOVER, text_color="#ffffff"),
-        "success": dict(fg_color=theme.OK, hover_color=theme.OK_HOVER, text_color="#ffffff"),
-        "danger": dict(fg_color=theme.NG, hover_color=theme.NG_HOVER, text_color="#ffffff"),
-        "secondary": dict(fg_color=theme.SURFACE_2, hover_color=theme.BORDER, text_color=theme.TEXT,
-                          border_width=1, border_color=theme.BORDER),
-        "ghost": dict(fg_color="transparent", hover_color=theme.SURFACE_2, text_color=theme.TEXT),
-    }
-    opts = {"height": 40, "corner_radius": 10, "font": theme.font(14, "bold" if kind != "ghost" else "normal")}
-    opts.update(styles[kind])
-    opts.update(kw)
-    return ctk.CTkButton(master, text=text, command=command, **opts)
-
-
-def muted(master, text: str = "", size: int = 12, **kw) -> ctk.CTkLabel:
-    return ctk.CTkLabel(master, text=text, font=theme.font(size), text_color=theme.MUTED, anchor="w", justify="left", **kw)
-
-
-# ---------------------------------------------------------------------------
 # Images
 # ---------------------------------------------------------------------------
-def widget_scaling(widget: tk.Misc) -> float:
-    try:
-        return ctk.ScalingTracker.get_widget_scaling(widget)
-    except Exception:
-        return 1.0
-
-
-def fit(img: np.ndarray, max_w: int, max_h: int) -> tuple[np.ndarray, float]:
-    h, w = img.shape[:2]
-    s = min(max_w / w, max_h / h)
-    if s <= 0:
-        return img, 1.0
-    interp = cv2.INTER_AREA if s < 1 else cv2.INTER_LINEAR
-    return cv2.resize(img, (max(1, int(w * s)), max(1, int(h * s))), interpolation=interp), s
-
-
-def to_pil(img_bgr: np.ndarray) -> Image.Image:
+def to_photo(img_bgr: np.ndarray, max_w: int, max_h: int) -> tuple[tk.PhotoImage, float]:
+    """Scale a BGR image to fit (max_w, max_h) and wrap it as a Tk PhotoImage (PPM, no Pillow needed)."""
+    h, w = img_bgr.shape[:2]
+    k = min(max_w / w, max_h / h)
+    if abs(k - 1) > 1e-3:
+        img_bgr = cv2.resize(img_bgr, (max(1, int(w * k)), max(1, int(h * k))),
+                             interpolation=cv2.INTER_AREA if k < 1 else cv2.INTER_LINEAR)
     if img_bgr.ndim == 2:
-        return Image.fromarray(img_bgr)
-    return Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+        img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_GRAY2BGR)
+    rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    header = f"P6 {rgb.shape[1]} {rgb.shape[0]} 255 ".encode()
+    return tk.PhotoImage(data=header + rgb.tobytes(), format="PPM"), k
 
 
-class ImageView(ctk.CTkLabel):
-    """Shows a BGR image scaled to fit, keeping the aspect ratio (HiDPI aware)."""
+class ImageView(tk.Canvas):
+    """Shows one image scaled to fit, or a placeholder text."""
 
-    def __init__(self, master, placeholder: str = "No image", **kw):
-        super().__init__(master, text=placeholder, fg_color=theme.CANVAS_BG, corner_radius=12,
-                         text_color="#94a3b8", font=theme.font(16), **kw)
-        self._img: np.ndarray | None = None
-        self._ctk_image = None
-        self._pending = None
-        self.bind("<Configure>", lambda _e: self._schedule())
+    def __init__(self, master, placeholder: str = "", **kw):
+        kw.setdefault("bg", style.CANVAS_BG)
+        super().__init__(master, highlightthickness=0, **kw)
+        self.image: np.ndarray | None = None
+        self.placeholder = placeholder
+        self._photo: tk.PhotoImage | None = None
+        self.bind("<Configure>", lambda _e: self._draw())
 
-    def set_image(self, img: np.ndarray | None) -> None:
-        if img is None:
+    def set_image(self, image: np.ndarray | None) -> None:
+        self.image = image
+        self._draw()
+
+    def clear(self, text: str | None = None) -> None:
+        if text is not None:
+            self.placeholder = text
+        self.set_image(None)
+
+    def _draw(self) -> None:
+        self.delete("all")
+        w, h = max(1, self.winfo_width()), max(1, self.winfo_height())
+        if self.image is None:
+            self._photo = None
+            self.create_text(w // 2, h // 2, text=self.placeholder, fill="#9ca3af", font=style.font(12),
+                             justify="center", width=max(100, w - 40))
             return
-        self._img = img
-        self._render()
-
-    def clear(self, text: str = "") -> None:
-        self._img = None
-        self._ctk_image = None
-        self.configure(image=None, text=text)
-
-    def _schedule(self) -> None:
-        if self._pending is None:
-            self._pending = self.after(80, self._render)
-
-    def _render(self) -> None:
-        self._pending = None
-        if self._img is None:
+        if w < 10 or h < 10:
             return
-        s = widget_scaling(self)
-        w, h = max(self.winfo_width(), 60), max(self.winfo_height(), 60)
-        small, _ = fit(self._img, w - 8, h - 8)  # physical pixels: sharp on scaled displays
-        pil = to_pil(small)
-        self._ctk_image = ctk.CTkImage(light_image=pil, dark_image=pil, size=(pil.width / s, pil.height / s))
-        self.configure(image=self._ctk_image, text="")
+        self._photo, _k = to_photo(self.image, w, h)
+        self.create_image(w // 2, h // 2, image=self._photo, anchor="center")
 
 
-class Banner(ctk.CTkFrame):
-    """Large OK / NG / status banner."""
+# ---------------------------------------------------------------------------
+# Result banner, tables, forms
+# ---------------------------------------------------------------------------
+class Banner(tk.Frame):
+    """Big coloured verdict box: OK / NG / READY ..."""
 
-    def __init__(self, master, **kw):
-        super().__init__(master, corner_radius=14, fg_color=theme.IDLE, **kw)
-        self.title = ctk.CTkLabel(self, text="READY", font=theme.font(46, "bold"), text_color="#ffffff")
-        self.title.pack(pady=(14, 0))
-        self.detail = ctk.CTkLabel(self, text="", font=theme.font(15), text_color="#ffffff", wraplength=380)
-        self.detail.pack(pady=(0, 14))
+    def __init__(self, master):
+        super().__init__(master, bg=style.IDLE)
+        self.title = tk.Label(self, text="READY", bg=style.IDLE, fg="#ffffff", font=style.font(40, "bold"))
+        self.title.pack(padx=16, pady=(14, 0))
+        self.detail = tk.Label(self, text="", bg=style.IDLE, fg="#ffffff", font=style.font(11), wraplength=360,
+                               justify="center")
+        self.detail.pack(padx=16, pady=(0, 14))
 
-    def show(self, text: str, color, detail: str = "") -> None:
-        self.configure(fg_color=color)
-        self.title.configure(text=text)
+    def show(self, title: str, color: str, detail: str = "") -> None:
+        for w in (self, self.title, self.detail):
+            w.configure(bg=color)
+        self.title.configure(text=title)
         self.detail.configure(text=detail)
 
     @property
@@ -210,265 +146,32 @@ class Banner(ctk.CTkFrame):
         return str(self.title.cget("text"))
 
 
-def chip(master, text: str, color: str) -> ctk.CTkLabel:
-    return ctk.CTkLabel(master, text=f" {text} ", fg_color=color, text_color="#ffffff", corner_radius=8,
-                        font=theme.font(12, "bold"), height=24)
+class Table(ttk.Frame):
+    """Treeview with a vertical scrollbar. ``columns`` = [(key, heading, width), ...]."""
 
-
-# ---------------------------------------------------------------------------
-# Dialogs
-# ---------------------------------------------------------------------------
-class ModalDialog(ctk.CTkToplevel):
-    def __init__(self, master, title: str):
+    def __init__(self, master, columns: Sequence[tuple[str, str, int]], height: int = 10,
+                 on_select: Callable[[str | None], None] | None = None, selectmode: str = "browse"):
         super().__init__(master)
-        self.title(title)
-        self.configure(fg_color=theme.SURFACE)
-        self.resizable(False, False)
-        self.transient(master.winfo_toplevel())
-        self.result = None
-        self.protocol("WM_DELETE_WINDOW", self.cancel)
-        self.bind("<Escape>", lambda _e: self.cancel())
-
-    def cancel(self) -> None:
-        self.result = None
-        self.destroy()
-
-    def run(self):
-        self.update_idletasks()
-        top = self.master.winfo_toplevel()
-        x = top.winfo_rootx() + (top.winfo_width() - self.winfo_width()) // 2
-        y = top.winfo_rooty() + (top.winfo_height() - self.winfo_height()) // 3
-        self.geometry(f"+{max(0, x)}+{max(0, y)}")
-        try:
-            self.wait_visibility()
-            self.grab_set()
-        except tk.TclError:
-            pass
-        self.focus_force()
-        self.master.wait_window(self)
-        return self.result
-
-
-class MessageDialog(ModalDialog):
-    def __init__(self, master, title: str, text: str, kind: str = "info", buttons: Sequence[tuple[str, object, str]] = ()):
-        super().__init__(master, title)
-        color = {"info": theme.ACCENT, "error": theme.NG, "warning": theme.WARN, "question": theme.ACCENT}[kind]
-        icon = {"info": "i", "error": "!", "warning": "!", "question": "?"}[kind]
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.pack(padx=24, pady=(22, 12), fill="both")
-        ctk.CTkLabel(body, text=icon, width=44, height=44, corner_radius=22, fg_color=color, text_color="#ffffff",
-                     font=theme.font(22, "bold")).pack(side="left", anchor="n", padx=(0, 16))
-        text_box = ctk.CTkFrame(body, fg_color="transparent")
-        text_box.pack(side="left", fill="both")
-        ctk.CTkLabel(text_box, text=title, font=theme.font(16, "bold"), text_color=theme.TEXT, anchor="w").pack(anchor="w")
-        ctk.CTkLabel(text_box, text=text, font=theme.font(13), text_color=theme.TEXT, anchor="w", justify="left",
-                     wraplength=420).pack(anchor="w", pady=(4, 0))
-        row = ctk.CTkFrame(self, fg_color="transparent")
-        row.pack(fill="x", padx=24, pady=(4, 20))
-        for label, value, kind_ in reversed(buttons or [("OK", True, "primary")]):
-            button(row, label, lambda v=value: self._choose(v), kind_, width=110).pack(side="right", padx=(8, 0))
-        self.bind("<Return>", lambda _e: self._choose((buttons or [("OK", True, "")])[0][1]))
-
-    def _choose(self, value) -> None:
-        self.result = value
-        self.destroy()
-
-
-def show_info(master, text: str, title: str = "Done") -> None:
-    MessageDialog(master, title, text, "info").run()
-
-
-def show_error(master, text: str, title: str = "Something went wrong") -> None:
-    MessageDialog(master, title, text, "error").run()
-
-
-def ask_yes_no(master, text: str, title: str = "Please confirm", yes: str = "Yes", danger: bool = False) -> bool:
-    buttons = [(yes, True, "danger" if danger else "primary"), ("Cancel", False, "secondary")]
-    return bool(MessageDialog(master, title, text, "question", buttons).run())
-
-
-class InputDialog(ModalDialog):
-    def __init__(self, master, title: str, fields: Sequence[tuple[str, str]], ok_text: str = "OK"):
-        """fields: (label, initial value)"""
-        super().__init__(master, title)
-        ctk.CTkLabel(self, text=title, font=theme.font(16, "bold"), text_color=theme.TEXT).pack(anchor="w", padx=24, pady=(20, 8))
-        self.entries = []
-        for label, value in fields:
-            muted(self, label).pack(anchor="w", padx=24)
-            e = ctk.CTkEntry(self, width=360, height=40, font=theme.font(14))
-            e.insert(0, value)
-            e.pack(padx=24, pady=(2, 10))
-            self.entries.append(e)
-        row = ctk.CTkFrame(self, fg_color="transparent")
-        row.pack(fill="x", padx=24, pady=(4, 20))
-        button(row, ok_text, self._ok, "primary", width=110).pack(side="right", padx=(8, 0))
-        button(row, "Cancel", self.cancel, "secondary", width=110).pack(side="right")
-        self.bind("<Return>", lambda _e: self._ok())
-        if self.entries:
-            self.after(50, self.entries[0].focus_set)
-
-    def _ok(self) -> None:
-        self.result = [e.get().strip() for e in self.entries]
-        self.destroy()
-
-
-def ask_fields(master, title: str, fields: Sequence[tuple[str, str]], ok_text: str = "OK") -> list[str] | None:
-    return InputDialog(master, title, fields, ok_text).run()
-
-
-class PinDialog(ModalDialog):
-    """Touch keypad for PINs/passwords (a physical keyboard works too)."""
-
-    def __init__(self, master, title: str, numeric_only: bool = True):
-        super().__init__(master, title)
-        self.numeric_only = numeric_only
-        ctk.CTkLabel(self, text=title, font=theme.font(17, "bold"), text_color=theme.TEXT).pack(pady=(20, 8))
-        self.var = tk.StringVar()
-        self.entry = ctk.CTkEntry(self, textvariable=self.var, show="•", width=260, height=52, justify="center",
-                                  font=theme.font(26))
-        self.entry.pack(padx=24)
-        self.entry.bind("<Return>", lambda _e: self._key("OK"))
-        grid = ctk.CTkFrame(self, fg_color="transparent")
-        grid.pack(padx=24, pady=14)
-        for i, k in enumerate(["1", "2", "3", "4", "5", "6", "7", "8", "9", "⌫", "0", "OK"]):
-            kind = "primary" if k == "OK" else "secondary"
-            button(grid, k, lambda key=k: self._key(key), kind, width=80, height=62, font=theme.font(22, "bold")).grid(
-                row=i // 3, column=i % 3, padx=5, pady=5)
-        button(self, "Cancel", self.cancel, "ghost", width=260).pack(pady=(0, 18))
-        self.after(50, self.entry.focus_set)
-
-    def _key(self, key: str) -> None:
-        if key == "OK":
-            self.result = self.var.get()
-            self.destroy()
-        elif key == "⌫":
-            self.var.set(self.var.get()[:-1])
-        else:
-            self.var.set(self.var.get() + key)
-
-    @staticmethod
-    def ask(master, title: str, numeric_only: bool = True) -> str | None:
-        return PinDialog(master, title, numeric_only).run()
-
-
-class CameraDialog(ModalDialog):
-    """Live camera view; every press of Capture hands a fresh frame to ``on_capture``."""
-
-    def __init__(self, master, source, on_capture: Callable[[np.ndarray], None], title: str = "Capture from camera",
-                 fps: int = 10):
-        super().__init__(master, title)
-        self.resizable(True, True)
-        self.geometry("960x700")
-        self.source = source
-        self.on_capture = on_capture
-        self.count = 0
-        self._ms = max(30, 1000 // max(1, fps))
-        self.view = ImageView(self, placeholder="Waiting for camera ...")
-        self.view.pack(fill="both", expand=True, padx=20, pady=(20, 10))
-        row = ctk.CTkFrame(self, fg_color="transparent")
-        row.pack(fill="x", padx=20, pady=(0, 20))
-        self.info = muted(row, "Place the board, then press Capture (or Space) for each image.", 13)
-        self.info.pack(side="left")
-        button(row, "Done", self.cancel, "secondary", width=110).pack(side="right", padx=(8, 0))
-        button(row, "Capture  [Space]", self.capture, "primary", width=170).pack(side="right")
-        self.bind("<space>", lambda _e: self.capture())
-        self._job = self.after(50, self._tick)
-
-    def _tick(self) -> None:
-        frame = self.source.latest()
-        if frame is not None:
-            self.view.set_image(frame)
-        err = getattr(self.source, "error", "")
-        if err:
-            self.info.configure(text=f"Camera: {err}", text_color=theme.NG)
-        self._job = self.after(self._ms, self._tick)
-
-    def capture(self) -> None:
-        try:
-            frame = self.source.capture(timeout=3)
-            self.on_capture(frame)
-        except Exception as exc:
-            self.info.configure(text=f"Capture failed: {exc}", text_color=theme.NG)
-            return
-        self.count += 1
-        self.info.configure(text=f"{self.count} image(s) captured. Move the board and capture more, or press Done.",
-                            text_color=theme.OK)
-
-    def destroy(self) -> None:
-        if self._job is not None:
-            self.after_cancel(self._job)
-            self._job = None
-        super().destroy()
-
-
-class PartPicker(ModalDialog):
-    """Searchable part list - works with hundreds of part numbers."""
-
-    def __init__(self, master, parts: dict, title: str = "Select part number"):
-        super().__init__(master, title)
-        self.parts = parts
-        self.geometry("520x560")
-        ctk.CTkLabel(self, text=title, font=theme.font(17, "bold"), text_color=theme.TEXT).pack(anchor="w", padx=20, pady=(18, 6))
-        self.search = ctk.CTkEntry(self, placeholder_text="Search part number or description", height=42, font=theme.font(14))
-        self.search.pack(fill="x", padx=20)
-        self.search.bind("<KeyRelease>", lambda _e: self._fill())
-        self.search.bind("<Return>", lambda _e: self._pick_first())
-        frame = ctk.CTkFrame(self, fg_color="transparent")
-        frame.pack(fill="both", expand=True, padx=20, pady=12)
-        self.table = Table(frame, [("code", "Part number", 140), ("desc", "Description", 260), ("size", "Layout", 80)])
-        self.table.pack(fill="both", expand=True)
-        self.table.tree.bind("<Double-1>", lambda _e: self._pick_selected())
-        self.table.tree.bind("<Return>", lambda _e: self._pick_selected())
-        row = ctk.CTkFrame(self, fg_color="transparent")
-        row.pack(fill="x", padx=20, pady=(0, 18))
-        button(row, "Select", self._pick_selected, "primary", width=120).pack(side="right", padx=(8, 0))
-        button(row, "Cancel", self.cancel, "secondary", width=120).pack(side="right")
-        self._fill()
-        self.after(50, self.search.focus_set)
-
-    def _matches(self) -> list[str]:
-        q = self.search.get().strip().lower()
-        return [c for c in sorted(self.parts) if not q or q in c.lower() or q in self.parts[c].description.lower()]
-
-    def _fill(self) -> None:
-        self.table.set_rows([(c, (c, self.parts[c].description, f"{self.parts[c].cables}x{self.parts[c].rows}"), ())
-                             for c in self._matches()])
-
-    def _pick_first(self) -> None:
-        m = self._matches()
-        if m:
-            self.result = m[0]
-            self.destroy()
-
-    def _pick_selected(self) -> None:
-        sel = self.table.selected()
-        if sel:
-            self.result = sel
-            self.destroy()
-
-
-# ---------------------------------------------------------------------------
-# Table (ttk.Treeview styled like the rest; fast for long lists)
-# ---------------------------------------------------------------------------
-class Table(ctk.CTkFrame):
-    def __init__(self, master, columns: Sequence[tuple[str, str, int]], height: int = 10, **kw):
-        super().__init__(master, fg_color=theme.SURFACE, corner_radius=10, border_width=1, border_color=theme.BORDER, **kw)
-        self.grid_columnconfigure(0, weight=1)
+        self.tree = ttk.Treeview(self, columns=[c[0] for c in columns], show="headings", height=height,
+                                 selectmode=selectmode)
+        for key, heading, width in columns:
+            self.tree.heading(key, text=heading, anchor="w")
+            self.tree.column(key, width=width, anchor="w", stretch=True)
+        sb = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        sb.grid(row=0, column=1, sticky="ns")
         self.grid_rowconfigure(0, weight=1)
-        self.tree = ttk.Treeview(self, columns=[c[0] for c in columns], show="headings", height=height, selectmode="browse")
-        for key, text, width in columns:
-            self.tree.heading(key, text=text, anchor="w")
-            self.tree.column(key, width=width, minwidth=40, anchor="w", stretch=True)
-        self.tree.tag_configure("ng", foreground=theme.NG)
-        self.tree.tag_configure("ok", foreground=theme.OK)
-        self.tree.tag_configure("muted", foreground="#94a3b8")
-        bar = ctk.CTkScrollbar(self, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=bar.set)
-        self.tree.grid(row=0, column=0, sticky="nsew", padx=(6, 0), pady=6)
-        bar.grid(row=0, column=1, sticky="ns", pady=6)
+        self.grid_columnconfigure(0, weight=1)
+        self.tree.tag_configure("ng", foreground=style.NG)
+        self.tree.tag_configure("ok", foreground=style.OK)
+        self.tree.tag_configure("muted", foreground=style.MUTED)
+        self._on_select = on_select
+        if on_select:
+            self.tree.bind("<<TreeviewSelect>>", lambda _e: on_select(self.selected()))
 
     def set_rows(self, rows: Sequence[tuple[str, Sequence, Sequence[str]]], keep_selection: bool = True) -> None:
-        """rows: (iid, values, tags)"""
+        """rows = [(iid, values, tags), ...]"""
         sel = self.selected() if keep_selection else None
         self.tree.delete(*self.tree.get_children())
         for iid, values, tags in rows:
@@ -484,7 +187,54 @@ class Table(ctk.CTkFrame):
     def select(self, iid: str) -> None:
         if self.tree.exists(iid):
             self.tree.selection_set(iid)
+            self.tree.focus(iid)
             self.tree.see(iid)
 
-    def on_select(self, fn: Callable[[str | None], None]) -> None:
-        self.tree.bind("<<TreeviewSelect>>", lambda _e: fn(self.selected()))
+
+def card(master, title: str = "", subtitle: str = "") -> ttk.Frame:
+    """A white panel with an optional heading. Returns the body frame; the panel is ``body.panel``."""
+    panel = ttk.Frame(master, style="Card.TFrame", padding=12)
+    if title:
+        ttk.Label(panel, text=title, style="CardTitle.TLabel").pack(anchor="w")
+    if subtitle:
+        ttk.Label(panel, text=subtitle, style="CardMuted.TLabel", wraplength=420, justify="left").pack(anchor="w")
+    body = ttk.Frame(panel, style="Card.TFrame", padding=0)
+    body.configure(borderwidth=0)
+    body.pack(fill="both", expand=True, pady=(8 if title else 0, 0))
+    body.panel = panel  # type: ignore[attr-defined]
+    return body
+
+
+def text_box(master, height: int = 8, **kw) -> tk.Text:
+    t = tk.Text(master, height=height, font=style.MONO, wrap="word", relief="solid", borderwidth=1,
+                highlightthickness=0, padx=6, pady=4, **kw)
+    t.configure(state="disabled")
+    return t
+
+
+def set_text(box: tk.Text, text: str, append: bool = False) -> None:
+    box.configure(state="normal")
+    if not append:
+        box.delete("1.0", "end")
+    box.insert("end", text)
+    box.see("end")
+    box.configure(state="disabled")
+
+
+# ---------------------------------------------------------------------------
+# Dialogs (thin wrappers so tests can replace them)
+# ---------------------------------------------------------------------------
+def show_info(parent, text: str, title: str = "Done") -> None:
+    messagebox.showinfo(title, text, parent=parent)
+
+
+def show_error(parent, text: str, title: str = "Error") -> None:
+    messagebox.showerror(title, text, parent=parent)
+
+
+def ask_yes_no(parent, text: str, title: str = "Please confirm") -> bool:
+    return bool(messagebox.askyesno(title, text, parent=parent))
+
+
+def ask_string(parent, title: str, prompt: str, initial: str = "", secret: bool = False) -> str | None:
+    return simpledialog.askstring(title, prompt, parent=parent, initialvalue=initial, show="*" if secret else None)

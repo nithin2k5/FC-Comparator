@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from fc_comparator.annotations import AnnotationStore
-from fc_comparator.synthetic import render_marked_board
+from fc_comparator.vision.dataset import AnnotationStore
+from fc_comparator.vision.synthetic import render_marked_board
 
 CLIP_LABELS = ["round", "fork_left", "fork_right", "small", "missing"]
 
