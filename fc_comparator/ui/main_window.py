@@ -17,9 +17,7 @@ log = logging.getLogger(__name__)
 # key, label, icon, protected
 NAV = [
     ("inspect", "Inspect", "◉", False),
-    ("data", "Training data", "✎", True),
-    ("train", "Train model", "⚙", True),
-    ("parts", "Part numbers", "☰", True),
+    ("setup", "Setup", "✎", True),
     ("history", "History & reports", "⏱", False),
     ("settings", "Settings", "⚒", True),
 ]
@@ -48,24 +46,21 @@ class MainWindow(ctk.CTkFrame):
         self.header = ctk.CTkLabel(self.content, text="", font=theme.font(24, "bold"), text_color=theme.TEXT, anchor="w")
         self.header.grid(row=0, column=0, sticky="w", pady=(0, 14))
 
-        from .pages.data import TrainingDataPage
         from .pages.history import HistoryPage
         from .pages.inspect import InspectPage
-        from .pages.parts import PartsPage
         from .pages.settings import SettingsPage
-        from .pages.train import TrainPage
+        from .pages.setup import SetupPage
 
         self.pages = {
             "inspect": InspectPage(self.content, self, station, self.dispatcher),
-            "data": TrainingDataPage(self.content, self, station, self.dispatcher),
-            "train": TrainPage(self.content, self, station, self.dispatcher),
-            "parts": PartsPage(self.content, self, station, self.dispatcher),
+            "setup": SetupPage(self.content, self, station, self.dispatcher),
             "history": HistoryPage(self.content, self, station),
             "settings": SettingsPage(self.content, self, station, self.dispatcher),
         }
         for page in self.pages.values():
             page.grid(row=1, column=0, sticky="nsew")
         self.inspect = self.pages["inspect"]
+        self.setup = self.pages["setup"]
 
         self._install_triggers()
         self.go("inspect")

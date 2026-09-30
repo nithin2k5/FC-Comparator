@@ -175,7 +175,7 @@ def test_new_part_from_marked_image_via_cli(tmp_path, capsys):
     assert cli_main(["-c", cfg_path, "add-images", str(photo.parent), "--part", "P004", "--good"]) == 0
     store = AnnotationStore(cfg.resolve(cfg.annotations.dir))
     image_id = next(r.id for r in store.records() if r.source_name == "p004_good.jpg")
-    store.set_boxes(image_id, boxes)  # what the operator does in "Training data"
+    store.set_boxes(image_id, boxes)  # what the operator does in "Setup"
     try:
         assert cli_main(["-c", cfg_path, "make-master", "--image-id", image_id, "--part", "P004"]) == 0
         saved = load_config(cfg_path).parts["P004"]

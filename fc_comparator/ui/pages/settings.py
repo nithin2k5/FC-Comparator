@@ -120,6 +120,10 @@ class SettingsPage(ctk.CTkFrame):
         self._entry(s, "detector.min_model_accuracy", "Minimum model accuracy for auto", 120, float)
         self._entry(s, "detector.imgsz", "Model image size", 120, int)
         self._entry(s, "detector.device", "Device", 120, help_text="cpu, or 0 for the first GPU")
+        s = self._section("Detection", "Training")
+        self._option(s, "training.base_model", "Base model", ["yolo11n.pt", "yolo11s.pt", "yolov8n.pt", "yolo11n.yaml"],
+                     "yolo11n.pt = fast; yolo11s.pt = more accurate; yolo11n.yaml = from scratch (offline)")
+        self._entry(s, "training.imgsz", "Training image size", 120, int, "960; use 1280 for small clips")
         s = self._section("Detection", "Comparison & layout")
         self._option(s, "compare.mode", "Compare mode", ["master", "cross", "both"],
                      "master = against the part's pattern; cross = cables must match each other")
@@ -270,7 +274,7 @@ class SettingsPage(ctk.CTkFrame):
         save_config(self.cfg)
         issues = self.station.rebuild_io()
         self.station.store.log_event("settings", "", "settings saved")
-        self.app.pages["data"].refresh()
+        self.app.pages["setup"].refresh()
         self.app.rebuild_detector()
         self.app.on_config_changed()
         msg = "Settings saved and applied."

@@ -19,6 +19,7 @@ from fc_comparator.capture.sources import write_image  # noqa: E402
 from fc_comparator.config import load_config, save_config  # noqa: E402
 from fc_comparator.pipeline import Inspector, Station  # noqa: E402
 from fc_comparator.synthetic import Geometry, render_marked_board  # noqa: E402
+from fc_comparator.ui.pages import setup as setup_page  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 BOARDS = ROOT / "samples" / "boards"
@@ -51,10 +52,10 @@ def shared_detector():
 def dialogs(monkeypatch):
     """Record dialogs; answer yes; hand out queued PINs and form answers."""
     from fc_comparator.ui import main_window, widgets
-    from fc_comparator.ui.pages import data, history, inspect, parts, settings, train
+    from fc_comparator.ui.pages import history, inspect, settings, setup
 
     shown = {"error": [], "info": [], "pins": [], "fields": [], "yes": True}
-    for mod in (main_window, widgets, data, history, inspect, parts, settings, train):
+    for mod in (main_window, widgets, history, inspect, settings, setup):
         for name, fn in (("show_error", lambda _p, text, *a, **k: shown["error"].append(text)),
                          ("show_info", lambda _p, text, *a, **k: shown["info"].append(text)),
                          ("ask_yes_no", lambda *_a, **_k: shown["yes"]),
@@ -155,25 +156,31 @@ def test_inspect_flow_lock_and_history(app, dialogs):
     assert "expected round, found fork_right" in app.pages["history"].detail.get("1.0", "end")
 
 
-def test_mark_new_images_and_create_a_part(app, dialogs, tmp_path):
+def test_setup_flow_new_part_annotate_reference_train(app, dialogs, tmp_path, monkeypatch):
     dialogs["pins"] += ["5678"]
-    assert app.go("data") and app.admin
-    page = app.pages["data"]
+    assert app.go("setup") and app.admin
+    page = app.pages["setup"]
 
-    # upload a good board of a new part with another layout
+    # 1. a new part number
+    dialogs["fields"].append(["P004", "Harness D"])
+    page.new_part()
+    assert page.code == "P004" and "Not ready" in page.part_info.cget("text")
+    assert page.table.tree.get_children() == ()  # no images of P004 yet
+
+    # 2. upload a good board of it (another layout than the sample parts)
     geo = Geometry(cable_x0=300, cable_dx=220, row_y0=280, row_dy=200)
     pattern = ["fork_right", "small", "round"]
     img, boxes = render_marked_board([pattern] * 5, seed=5, geometry=geo)
     photo = write_image(tmp_path / "upload" / "p004_good.jpg", img)
     page._import([photo])
     settle(app.root, lambda: dialogs["info"])
-    assert "Added 1 image" in dialogs["info"][-1]
+    assert "Added 1 image(s) to P004" in dialogs["info"][-1]
     image_id = next(r.id for r in page.store.records() if r.source_name == "p004_good.jpg")
-    page.table.select(image_id)
+    assert page.store.get(image_id).part == "P004"
     settle(app.root, lambda: page.image_id == image_id)
     assert page.canvas.image is not None and page.canvas.boxes == []
 
-    # mark every clip through the canvas' own mouse handling
+    # 3. annotate every clip through the canvas' own mouse handling
     canvas = page.canvas
 
     class Ev:
@@ -202,33 +209,55 @@ def test_mark_new_images_and_create_a_part(app, dialogs, tmp_path):
     canvas.undo()
     assert len(canvas.boxes) == 15
 
-    # make it the master of a new part
-    dialogs["fields"].append(["P004", "Harness D"])
-    page.make_master()
-    assert dialogs["info"][-1].startswith("P004 saved")
+    # the annotated good board becomes the part's reference
+    dialogs["fields"].append(["Harness D"])
+    page.make_reference()
+    assert "P004 is ready" in dialogs["info"][-1]
     part = app.cfg.parts["P004"]
     assert (part.cables, part.rows, part.pattern, part.master_image) == (5, 3, pattern, image_id)
+    assert part.description == "Harness D"
     assert load_config(tmp_path / "config.yaml").parts["P004"].layout is not None
     assert page.store.get(image_id).good
+    assert page.table.tree.item(image_id, "values")[0].startswith("★")
+
+    # 4. train; a model below the target is used only when the user agrees
+    from types import SimpleNamespace
+
+    ev = SimpleNamespace(accuracy=0.8, missed_clips=2, false_clips=1, images=3)
+    monkeypatch.setattr(setup_page, "train_detector",
+                        lambda *a, **k: SimpleNamespace(evaluation=ev, epochs_run=5, stopped=False))
+    page.epochs.delete(0, "end")
+    page.epochs.insert(0, "5")
+    page.start_training()
+    settle(app.root, lambda: not page.training)
+    assert "Validation accuracy 80.0%" in dialogs["info"][-1] and "new model" in dialogs["info"][-1]
+    assert load_config(tmp_path / "config.yaml").detector.backend == "yolo"
+    dialogs["yes"] = False
+    page.start_training()
+    settle(app.root, lambda: not page.training)
+    assert "keeps template matching" in dialogs["info"][-1] and app.cfg.detector.backend == "auto"
+
+    # leaving Setup selects the new part for inspection
+    app.go("inspect")
+    assert app.inspect.part_code == "P004"
 
 
-def test_password_gate_parts_and_settings(app, dialogs):
-    assert not app.go("parts")  # dialog cancelled
+def test_password_gate_and_settings(app, dialogs):
+    assert not app.go("setup")  # dialog cancelled
     dialogs["pins"] += ["9999"]
-    assert not app.go("parts") and "not correct" in dialogs["error"][-1]
+    assert not app.go("setup") and "not correct" in dialogs["error"][-1]
     dialogs["pins"] += ["5678"]
-    assert app.go("parts") and app.current == "parts"
+    assert app.go("setup") and app.current == "setup"
 
-    parts = app.pages["parts"]
-    parts.search.insert(0, "harness c")
-    parts.refresh_list()
-    assert parts.table.tree.get_children() == ("P003",)
-    parts.load("P003")
-    assert len(parts.row_menus) == 5 and parts.preview._img is not None  # master layout preview
-    parts.desc.delete(0, "end")
-    parts.desc.insert(0, "Harness C rev 2")
-    parts.save()
-    assert app.cfg.parts["P003"].description == "Harness C rev 2" and app.cfg.parts["P003"].layout is not None
+    page = app.pages["setup"]
+    page.select_part("P003")
+    page.scope.set("This part")
+    page.refresh_list()
+    assert [page.store.get(i).part for i in page.table.tree.get_children()] == ["P003"]
+    assert "5 cables" in page.part_info.cget("text") or "reference board set" in page.part_info.cget("text")
+    page.scope.set("All parts")
+    page.refresh_list()
+    assert len(page.table.tree.get_children()) == len(page.store)
 
     assert app.go("settings")
     s = app.pages["settings"]

@@ -97,7 +97,7 @@ def cmd_add_images(args) -> int:
         added += new
         dup += not new
     print(f"Added {added} image(s), {dup} duplicate(s) skipped. Store: {store.stats()}")
-    print("Mark the clips on them in the app: Training data.")
+    print("Annotate the clips on them in the app: Setup.")
     return 0
 
 

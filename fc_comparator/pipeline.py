@@ -55,7 +55,7 @@ class Inspector:
             report.error = f"unknown part number {part_number!r}"
             return self._done(report, t0), []
         if not self.detector.ready:
-            report.error = "no trained detector - mark clips in Training data first"
+            report.error = "no trained detector - annotate images in Setup first"
             return self._done(report, t0), []
 
         try:

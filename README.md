@@ -5,16 +5,16 @@ board. The station finds every plastic clip, works out which cable and row each 
 with the master of the scanned part number. When anything is wrong it raises an alert on screen, on a tower light and on a
 buzzer, and every result is logged.
 
-The station is **trained by marking images**. You upload photos of boards and draw a box around each clip, choosing its
-type. The station learns the clip types from those marks. A marked known-good board becomes a part's master in one click,
-which defines both its clip pattern and where the clips sit. That makes it practical to handle many part numbers with
-different layouts.
+Everything is set up on one **Setup** page, in four steps:
 
 ```
- upload photos ─► mark clips (box + type) ─► good board = part master ─► train (optional YOLO)
-                                                                                │
+ 1 select / create part number ─► 2 upload images or capture from camera ─► 3 annotate clips ─► 4 train model
+                                                                                                        │
  scan P/N ─► capture ─► detect clips ─► place on the part's layout ─► compare ─► OK / NG ─► light, buzzer, lock, log
 ```
+
+One completely annotated good board of each part is its **reference board**: it defines the clip per row and where
+each clip sits, so many part numbers with different layouts are easy to handle.
 
 ## Contents
 
@@ -22,8 +22,8 @@ different layouts.
 2. [Installation](#2-installation)
 3. [Quick start with the sample data](#3-quick-start-with-the-sample-data)
 4. [Camera setup](#4-camera-setup)
-5. [Marking images](#5-marking-images)
-6. [Adding a part number](#6-adding-a-part-number)
+5. [Setting up a part](#5-setting-up-a-part)
+6. [Annotating tips](#6-annotating-tips)
 7. [Training the model](#7-training-the-model)
 8. [Operating the station](#8-operating-the-station)
 9. [Wiring the tower light, buzzer and foot pedal](#9-wiring-the-tower-light-buzzer-and-foot-pedal)
@@ -55,8 +55,8 @@ extend the list:
   unseen, shifted boards with no false positives.
 * **YOLO (Ultralytics YOLO11)** is trained on the marked images (§7). It is faster and more robust on real photos.
   `detector.backend: auto` switches to the trained model only once its validation accuracy reaches
-  `detector.min_model_accuracy` (95%). An under-trained model therefore never silently replaces working template
-  matching; the reason is shown in the sidebar.
+  `detector.min_model_accuracy` (95%). After training you can still choose to use a weaker model; the reason is shown
+  in the sidebar.
 
 **Automatic layout.** A part's master image records where each clip sits (cable, row). At inspection the detected clips
 are fitted onto that layout:
@@ -87,7 +87,7 @@ fc_comparator/
   compare/         master (A), cross-cable majority (B), both
   pipeline.py      Inspector (image → report) and Station (capture, alert, lock, logging)
   capture/ alert/ storage/ annotate.py barcode.py security.py synthetic.py cli.py
-  ui/              CustomTkinter station UI (pages/, marking canvas in annotator.py)
+  ui/              CustomTkinter station UI (pages/ incl. setup.py, annotation canvas in annotator.py)
 scripts/           train_detector.py, make_samples.py
 config/config.yaml sample configuration with three parts
 samples/           marked sample images, test boards + manifest (synthetic)
@@ -171,20 +171,44 @@ Security.
    config). Keep the same camera settings for the images you mark and the boards you inspect.
 5. Run `python main.py check` and watch the live preview on the Inspect page.
 
-**Inspect** always uses a frame captured after the button press, never a stale buffered one. A disconnected camera
+**Inspect** and **Capture from camera** always use a frame captured after the button press, never a stale buffered one. A disconnected camera
 reconnects automatically and the fault is shown on screen.
 
 ---
 
-## 5. Marking images
+## 5. Setting up a part
 
-Open **Training data** in the sidebar (setup password).
+Open **Setup** in the sidebar (setup password). Work through the four numbered cards:
 
-1. **Upload** with **+ Images** (files), **+ Folder** (a whole folder), or **Capture from camera**. Duplicate images are
-   skipped automatically.
-2. **Select an image** in the list. Filter by *To mark*, *Marked* or *Good*.
-3. **Mark every clip.** Pick the clip type in the palette (or press **1–9**), then drag a box around the clip. Mark
-   *every* clip on the image: unmarked clips teach the detector "this is not a clip".
+1. **Part number.** Pick the part from the list, or press **+ New** and enter the part number and a description.
+2. **Images.** Add photos of this part's boards with **+ Images** or **+ Folder**, or press **Capture from camera**:
+   a live view opens, and every **Capture** (or Space) adds a fresh frame. New images belong to the selected part.
+   Duplicates are skipped. *This part / All parts* switches the list.
+3. **Annotate.** Select an image, pick the clip type (or press **1–9**) and drag a box around every clip. Markings save
+   automatically. On one complete known-good board press **Use as reference board**: the station works out the cables
+   and rows, shows which clip became which position (C1 R1 …) and saves the part. From then on it can be inspected.
+   The reference image is marked ★ in the list.
+4. **Train & detect.** Press **Train model**. Training runs in the background with progress and can be stopped. One
+   model is trained on the annotated images of *all* parts, because the clip types are shared. When it finishes the
+   station detects with the new model. If validation accuracy is below `detector.min_model_accuracy` (95%) you are
+   asked whether to use it anyway; otherwise the station keeps template matching.
+
+Until a model is trained the station already detects with **template matching** on your annotations, so a part can be
+inspected as soon as it has a reference board.
+
+When you leave Setup, the Inspect page switches to the part you just set up.
+
+Command-line equivalent:
+
+```bash
+python main.py add-images photos/P004/ --part P004 --good     # then annotate them in Setup
+python main.py make-master --image-id <id> --part P004 --description "Harness D"
+python main.py train
+```
+
+---
+
+## 6. Annotating tips
 
 | action | how |
 |---|---|
@@ -195,52 +219,27 @@ Open **Training data** in the sidebar (setup password).
 | zoom / pan | mouse wheel / right-drag, **Fit** button or F |
 | previous / next image | ← / → (with no box selected) |
 
-4. **Auto-mark with detector** pre-marks an image with the current detector. Check every box, fix the type, move or
-   delete boxes, and draw any clips it missed. This makes marking many images much faster.
-5. Markings **save automatically**. The template detector relearns when you leave the page.
-
-**What to mark:** boards of every part, both fork directions, boards shifted around on the fixture, and some with
-missing clips (mark only the clips that are there). About 20 clips per type is enough to start; aim for 50 or more per type
-before training YOLO. The Train page shows your progress.
-
----
-
-## 6. Adding a part number
-
-1. Upload a photo of a **known-good** board of the new part and mark every clip (§5).
-2. Click **Create / update part from this image**, then enter the part number and a description.
-3. The station works out the cables and rows, shows which clip became which position (C1 R1 …), and lists the clip per
-   row. Confirm to save.
-
-The part now has a **pattern**, the clip per row (the same on every cable), and a **layout**, where each clip sits.
-Operators can inspect it immediately. If the cables of a good board differ only in fork direction, that row becomes
-`fork`, meaning either direction.
-
-**Part numbers** (sidebar) lists all parts with search. Use it to edit descriptions or patterns, see a preview of each
-part's master layout, or create a part by hand (pattern only, no master image). Command-line equivalent:
-
-```bash
-python main.py add-images photos/P004/ --part P004 --good     # then mark them in the UI
-python main.py make-master --image-id <id> --part P004 --description "Harness D"
-```
+* Mark **every** clip on an image: unmarked clips teach the detector "this is not a clip".
+* **Auto-mark** pre-marks an image with the current detector. Check every box, fix types, delete wrong ones and draw
+  the missed ones. This makes annotating many images much faster.
+* Annotate boards of every part, both fork directions, boards shifted on the fixture, and some with missing clips
+  (mark only the clips that are there). About 20 clips per type is enough to start; aim for 50 or more per type
+  before training. The Train card shows the counts.
 
 ---
 
 ## 7. Training the model
 
-Open **Train model** (setup password). The page shows the marked clips per type against the recommended amount.
+Step 4 of the Setup page trains the model (see §5). Base model and training image size are in Settings → Detection →
+Training (YOLO11 nano and 960 px by default; use 1280 px for small clips).
 
-1. Choose the base model (YOLO11 nano by default), the number of epochs (100) and the image size (960; use 1280 for
-   small clips). Press **Start training**. Training runs in the background with progress and an estimated time left, and
-   can be stopped at any time. Meanwhile the station keeps inspecting with the current detector.
-2. Training exports the marked images as a YOLO data set with a per-image train/validation split. Every image with forks
-   is also added mirrored, with `fork_left` and `fork_right` swapped. YOLO's own random flip is turned off, because it
-   would keep the wrong direction label.
-3. When training finishes, the page reports validation **accuracy**, missed and false clips, per-type precision and
-   recall, and a **confusion matrix**. The results are saved next to the model as `clip_detector_report.json` and
-   `clip_detector_confusion.png`.
-4. If accuracy reaches `detector.min_model_accuracy` (95%), the station switches to the model. Otherwise it keeps
-   template matching and tells you to mark more images or train longer.
+* Training exports the annotated images as a YOLO data set with a per-image train/validation split. Every image with
+  forks is also added mirrored, with `fork_left` and `fork_right` swapped. YOLO's own random flip is turned off,
+  because it would keep the wrong direction label.
+* The results are saved next to the model as `clip_detector_report.json` and `clip_detector_confusion.png`.
+* A model at or above `detector.min_model_accuracy` is used automatically (`detector.backend: auto`). Choosing
+  *Use model* for a weaker one sets `detector.backend: yolo`; set it back to `auto` in Settings to return to the
+  accuracy guard.
 
 Command line (same result):
 
@@ -428,8 +427,8 @@ pytest -m "not ui"       # skip the UI tests (e.g. on a headless machine)
   and the accuracy guard against under-trained models.
 * `test_training.py` covers data-set export with mirroring, evaluation and the confusion matrix, and a short real YOLO
   training run.
-* `test_ui.py` drives the real window: scan, inspect, NG lock, marking boxes with the mouse, creating a part from a
-  marked image, the part editor, and settings including renaming clip types.
+* `test_ui.py` drives the real window: scan, inspect, NG lock, and the whole Setup flow (new part, upload, marking
+  boxes with the mouse, reference board, training), plus settings including renaming clip types.
 * Also: `test_compare.py`, `test_annotations.py`, `test_alert.py` (fake GPIO, serial port and PLC), `test_storage.py`
   (including the database migration), `test_config.py`, `test_capture.py` and `test_barcode.py`.
 

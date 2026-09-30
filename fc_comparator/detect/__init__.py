@@ -76,6 +76,6 @@ def create_detector(cfg: AppConfig, store: AnnotationStore | None = None) -> Det
     det = template or TemplateDetector(d.template, cfg.taxonomy, store)
     det.note = note or "template matching on the marked images"
     if not det.ready:
-        det.note = "no marked clips yet - upload and mark images in Training data"
+        det.note = "no marked clips yet - add and annotate images in Setup"
         log.warning(det.note)
     return det
