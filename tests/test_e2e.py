@@ -5,7 +5,7 @@ Acceptance criteria covered:
 * missing clips and low-confidence detections are never OK
 * boards shifted by ~20 px are inspected correctly
 * the alert fires within 1 s of NG and every result is logged
-* a new part number is set up from a marked good image (numerous parts workflow)
+* a new part number is set up from a good board (numerous parts workflow)
 """
 
 from pathlib import Path
@@ -13,19 +13,18 @@ from pathlib import Path
 import pytest
 import yaml
 
-from fc_comparator.alert import AlertController, ConsoleAlert, Outputs
-from fc_comparator.annotations import AnnotationStore
-from fc_comparator.capture import FileSource
-from fc_comparator.capture.sources import read_image, write_image
 from fc_comparator.cli import main as cli_main
 from fc_comparator.config import load_config, save_config
-from fc_comparator.models import Box, PartNumber
-from fc_comparator.pipeline import Inspector, Station, StationLocked
-from fc_comparator.synthetic import Geometry, render_marked_board
+from fc_comparator.core.models import Box, PartNumber
+from fc_comparator.station import Inspector, Station, StationLocked
+from fc_comparator.station.alerts import AlertController, ConsoleAlert, Outputs
+from fc_comparator.vision.camera import FileSource, read_image, write_image
+from fc_comparator.vision.dataset import AnnotationStore
+from fc_comparator.vision.synthetic import Geometry, render_marked_board
 
 ROOT = Path(__file__).resolve().parents[1]
-SAMPLES = ROOT / "samples"
-CONFIG = ROOT / "config" / "config.yaml"
+SAMPLES = ROOT / "tests" / "fixtures"
+CONFIG = SAMPLES / "config.yaml"
 MANIFEST = yaml.safe_load((SAMPLES / "manifest.yaml").read_text(encoding="utf-8"))
 P001 = ["round", "fork_left", "small", "round"]
 
@@ -33,7 +32,7 @@ P001 = ["round", "fork_left", "small", "round"]
 def tmp_config(tmp_path: Path):
     """The sample config, saved into tmp with absolute paths (safe to modify)."""
     cfg = load_config(CONFIG)
-    for obj, attr in ((cfg.annotations, "dir"), (cfg.camera, "file_path"), (cfg.detector, "model_path"),
+    for obj, attr in ((cfg.dataset, "dir"), (cfg.camera, "file_path"), (cfg.detector, "model_path"),
                       (cfg.training, "workdir")):
         setattr(obj, attr, str(cfg.resolve(getattr(obj, attr))))
     cfg.storage.database = str(tmp_path / "inspections.db")
@@ -118,7 +117,7 @@ def test_missing_and_uncertain_are_never_ok(station):
 
 def test_part_without_master_layout_uses_grid(station):
     station.lock.enabled = False
-    station.cfg.parts["PX"] = PartNumber("PX", list(P001), cables=4)  # typed pattern, no master image
+    station.cfg.parts["PX"] = PartNumber("PX", [[p] * 4 for p in P001])  # typed pattern, no master image
     rep = station.inspect("PX", image=read_image(SAMPLES / "boards" / "board_P001_missing.jpg")).report
     assert not rep.error and sorted(p.key for p in rep.mismatches) == [(2, 3)]
     assert "grid" in rep.placement.message
@@ -164,7 +163,7 @@ def test_logging_and_evidence_images(station):
 
 
 def test_new_part_from_marked_image_via_cli(tmp_path, capsys):
-    """Numerous parts: upload a good board of a new layout, mark it, make it a master, inspect."""
+    """Numerous parts: add a good board of a new layout, mark it, make it a part's master, inspect."""
     cfg = tmp_config(tmp_path)
     cfg_path = str(tmp_path / "config.yaml")
     geo = Geometry(cable_x0=300, cable_dx=220, row_y0=280, row_dy=200)
@@ -173,13 +172,13 @@ def test_new_part_from_marked_image_via_cli(tmp_path, capsys):
     photo = write_image(tmp_path / "upload" / "p004_good.jpg", img)
 
     assert cli_main(["-c", cfg_path, "add-images", str(photo.parent), "--part", "P004", "--good"]) == 0
-    store = AnnotationStore(cfg.resolve(cfg.annotations.dir))
+    store = AnnotationStore(cfg.resolve(cfg.dataset.dir))
     image_id = next(r.id for r in store.records() if r.source_name == "p004_good.jpg")
-    store.set_boxes(image_id, boxes)  # what the operator does in "Setup"
+    store.set_boxes(image_id, boxes)  # what the operator does on the Training tab
     try:
-        assert cli_main(["-c", cfg_path, "make-master", "--image-id", image_id, "--part", "P004"]) == 0
+        assert cli_main(["-c", cfg_path, "add-part", "--image-id", image_id, "--part", "P004"]) == 0
         saved = load_config(cfg_path).parts["P004"]
-        assert (saved.cables, saved.rows, saved.pattern) == (5, 3, pattern)
+        assert (saved.cables, saved.rows, saved.pattern) == (5, 3, [[p] * 5 for p in pattern])
 
         test_board = write_image(tmp_path / "p004_test.jpg",
                                  render_marked_board([pattern, pattern, ["fork_right", "missing", "round"], pattern, pattern],

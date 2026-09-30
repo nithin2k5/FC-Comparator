@@ -1,171 +1,133 @@
-"""Inspect page: live preview, part selection (scan / search), INSPECT, verdict, findings, NG lock."""
+"""Inspect: scan/choose the part number, press INSPECT (or the foot pedal), read OK / NG."""
 
 from __future__ import annotations
 
-import logging
+import tkinter as tk
 from datetime import date
-from tkinter import filedialog
+from tkinter import filedialog, ttk
 
-import customtkinter as ctk
-
-from ...barcode import parse_scan
-from ...capture import FileSource
-from ...capture.sources import read_image
-from ...models import MISSING
-from ...pipeline import Station, StationLocked, StationResult
-from .. import theme
-from ..widgets import Banner, Card, Dispatcher, ImageView, PartPicker, PinDialog, button, chip, muted, show_error
-
-log = logging.getLogger(__name__)
+from ...core.models import MISSING, UNCERTAIN
+from ...station import StationLocked, StationResult
+from ...station.barcode import parse_scan
+from ...vision.camera import FileSource, read_image
+from .. import style
+from ..widgets import Banner, ImageView, Table, ask_string, show_error
 
 
-class InspectPage(ctk.CTkFrame):
-    title = "Inspect"
-
-    def __init__(self, master, app, station: Station, dispatcher: Dispatcher):
-        super().__init__(master, fg_color="transparent")
+class InspectPage(ttk.Frame):
+    def __init__(self, master, app):
+        super().__init__(master, padding=8)
         self.app = app
-        self.station = station
-        self.cfg = station.cfg
-        self.dispatcher = dispatcher
+        self.station = app.station
+        self.cfg = app.cfg
+        self.dispatcher = app.dispatcher
         self.busy = False
+        self._file_image = None  # an image file loaded for the next inspection (camera mode)
         self._showing_result = False
-        self._file_image = None  # an image loaded from disk while in camera mode
         self._last_annotated = None
-        self.part_code = ""
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
+        self.view = ImageView(self, placeholder="Camera image appears here")
+        self.view.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
 
-        # -- left: image ------------------------------------------------------
-        left = Card(self)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
-        left.body.grid_columnconfigure(0, weight=1)
-        left.body.grid_rowconfigure(0, weight=1)
-        self.view = ImageView(left.body, placeholder="Waiting for camera ...")
-        self.view.grid(row=0, column=0, sticky="nsew")
-        bar = ctk.CTkFrame(left.body, fg_color="transparent")
-        bar.grid(row=1, column=0, sticky="ew", pady=(12, 0))
-        self.view_mode = ctk.CTkSegmentedButton(bar, values=["Live", "Last result"], command=self._on_view_mode,
-                                                height=38, font=theme.font(13, "bold"))
-        self.view_mode.set("Live")
-        self.view_mode.pack(side="left")
-        button(bar, "Load image ...", self.load_image, "secondary", width=150).pack(side="right")
-        self.timing = muted(bar, "")
-        self.timing.pack(side="left", padx=16)
+        side = ttk.Frame(self, width=400)
+        side.grid(row=0, column=1, sticky="ns")
+        side.grid_propagate(False)
+        side.grid_columnconfigure(0, weight=1)
+        side.grid_rowconfigure(6, weight=1)
 
-        # -- right: controls ----------------------------------------------------
-        right = ctk.CTkFrame(self, fg_color="transparent", width=440)
-        right.grid(row=0, column=1, sticky="ns")
-        right.grid_propagate(False)
-        right.grid_columnconfigure(0, weight=1)
-        right.grid_rowconfigure(4, weight=1)
+        form = ttk.Frame(side)
+        form.grid(row=0, column=0, sticky="ew")
+        form.grid_columnconfigure(1, weight=1)
+        ttk.Label(form, text="Part number").grid(row=0, column=0, sticky="w", pady=3)
+        self.part = ttk.Combobox(form, font=style.font(13))
+        self.part.grid(row=0, column=1, sticky="ew", pady=3)
+        self.part.bind("<Return>", lambda _e: self.on_scan())
+        self.part.bind("<<ComboboxSelected>>", lambda _e: self._change_part(self.part.get()))
+        ttk.Label(form, text="Operator").grid(row=1, column=0, sticky="w", pady=3, padx=(0, 8))
+        self.operator = ttk.Entry(form, font=style.font(12))
+        self.operator.grid(row=1, column=1, sticky="ew", pady=3)
+        self.part_info = ttk.Label(side, text="", style="Muted.TLabel", wraplength=390, justify="left")
+        self.part_info.grid(row=1, column=0, sticky="w", pady=(2, 8))
 
-        self.banner = Banner(right)
-        self.banner.grid(row=0, column=0, sticky="ew")
+        self.inspect_btn = ttk.Button(side, text="INSPECT", style="Big.TButton", command=self.inspect)
+        self.inspect_btn.grid(row=2, column=0, sticky="ew")
+        row = ttk.Frame(side)
+        row.grid(row=3, column=0, sticky="ew", pady=(6, 8))
+        ttk.Button(row, text="Inspect an image file...", command=self.load_image).pack(side="left")
+        ttk.Button(row, text="Live view", command=self.live_view).pack(side="left", padx=6)
 
-        part_card = Card(right)
-        part_card.grid(row=1, column=0, sticky="ew", pady=(14, 0))
-        b = part_card.body
-        b.grid_columnconfigure(0, weight=1)
-        muted(b, "Scan a barcode, or type a part number and press Enter", 12).grid(row=0, column=0, columnspan=2, sticky="w")
-        self.scan = ctk.CTkEntry(b, placeholder_text="P001, OP:1234 ...", height=44, font=theme.font(15))
-        self.scan.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
-        self.scan.bind("<Return>", lambda _e: self.on_scan())
-        self.part_label = ctk.CTkLabel(b, text="No part selected", font=theme.font(26, "bold"), text_color=theme.TEXT,
-                                       anchor="w")
-        self.part_label.grid(row=2, column=0, sticky="w", pady=(12, 0))
-        self.pick_btn = button(b, "Choose ...", self.choose_part, "secondary", width=110)
-        self.pick_btn.grid(row=2, column=1, sticky="e", pady=(12, 0))
-        self.part_desc = muted(b, "", 13)
-        self.part_desc.grid(row=3, column=0, columnspan=2, sticky="w")
-        self.chips = ctk.CTkFrame(b, fg_color="transparent")
-        self.chips.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        op = ctk.CTkFrame(b, fg_color="transparent")
-        op.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-        muted(op, "Operator", 13).pack(side="left")
-        self.operator = ctk.CTkEntry(op, placeholder_text="ID or scan OP:badge", height=36, font=theme.font(14))
-        self.operator.pack(side="left", fill="x", expand=True, padx=(10, 0))
+        self.banner = Banner(side)
+        self.banner.grid(row=4, column=0, sticky="ew")
+        self.ack_btn = ttk.Button(side, text="Supervisor unlock (PIN)", style="Danger.TButton", command=self.acknowledge)
+        self.timing = ttk.Label(side, text="", style="Muted.TLabel")
+        self.timing.grid(row=5, column=0, sticky="w", pady=(4, 4))
 
-        self.inspect_btn = button(right, f"INSPECT   [{self.cfg.trigger.key}]", self.inspect, "primary",
-                                  height=84, corner_radius=14, font=theme.font(26, "bold"))
-        self.inspect_btn.grid(row=2, column=0, sticky="ew", pady=(14, 0))
-        self.ack_slot = ctk.CTkFrame(right, fg_color="transparent", height=0)
-        self.ack_slot.grid(row=3, column=0, sticky="ew")
-        self.ack_btn = button(self.ack_slot, "Supervisor acknowledge (PIN)", self.acknowledge, "danger", height=50)
-
-        findings = Card(right, title="Findings")
-        findings.grid(row=4, column=0, sticky="nsew", pady=(14, 0))
-        findings.body.grid_columnconfigure(0, weight=1)
-        findings.body.grid_rowconfigure(0, weight=1)
-        self.findings = ctk.CTkScrollableFrame(findings.body, fg_color="transparent")
-        self.findings.grid(row=0, column=0, sticky="nsew")
-        self.stats = muted(right, "", 13)
-        self.stats.grid(row=5, column=0, sticky="w", pady=(10, 0))
+        self.findings = Table(side, [("pos", "Position", 70), ("expected", "Expected", 110),
+                                     ("found", "Found", 110), ("conf", "Conf.", 50)], height=8)
+        self.findings.grid(row=6, column=0, sticky="nsew")
+        self.stats = ttk.Label(side, text="", style="Muted.TLabel")
+        self.stats.grid(row=8, column=0, sticky="w", pady=(6, 0))
 
         self.station.lock.subscribe(lambda _s: self.dispatcher.call(self.update_lock_ui))
-        self._preview_ms = max(30, int(1000 / max(1, self.cfg.ui.preview_fps)))
+        self._preview_ms = max(40, int(1000 / max(1, self.cfg.ui.preview_fps)))
         self._preview_job = self.after(self._preview_ms, self._preview_tick)
-        self._set_findings([])
-        codes = sorted(self.cfg.parts)
-        self.set_part(codes[0] if codes else "")
+        self.on_config_changed()
         self.update_lock_ui()
-        self._update_stats()
 
-    # -- part selection ----------------------------------------------------------
-    def refresh(self) -> None:
+    # -- part number -------------------------------------------------------------
+    @property
+    def part_code(self) -> str:
+        return self.part.get().strip()
+
+    def on_config_changed(self) -> None:
+        codes = sorted(self.cfg.parts)
+        self.part.configure(values=codes)
         if self.part_code not in self.cfg.parts:
-            codes = sorted(self.cfg.parts)
             self.set_part(codes[0] if codes else "")
         else:
             self.set_part(self.part_code)
         self._update_stats()
 
     def set_part(self, code: str) -> None:
-        self.part_code = code
-        for w in self.chips.winfo_children():
-            w.destroy()
+        self.part.set(code)
         pn = self.cfg.parts.get(code)
         if pn is None:
-            self.part_label.configure(text="No part selected")
-            self.part_desc.configure(text="Scan a barcode or choose a part number")
+            self.part_info.configure(text="Scan a barcode or choose a part number." if not code else
+                                     f"{code} is not a known part number (add it on the Parts tab).")
             return
-        self.part_label.configure(text=code)
-        layout = "master layout" if pn.layout else "no master image yet"
-        self.part_desc.configure(text=f"{pn.description or 'No description'}  ·  {pn.cables} cables x {pn.rows} clips  ·  {layout}")
-        for i, label in enumerate(pn.pattern):
-            color = theme.class_color(self.cfg.taxonomy.classes, label) if label in self.cfg.taxonomy.classes else "#475569"
-            chip(self.chips, f"R{i + 1} {label}", color).pack(side="left", padx=(0, 6))
-
-    def choose_part(self) -> None:
-        code = PartPicker(self, self.cfg.parts).run()
-        if code:
-            self._change_part(code)
+        rows = "\n".join(f"Row {r}: " + ", ".join(row) for r, row in enumerate(pn.pattern, 1))
+        self.part_info.configure(text=f"{pn.description or 'No description'}  ·  {pn.cables} cables x {pn.rows} rows\n{rows}")
 
     def _change_part(self, code: str) -> None:
         st = self.station.lock.state
         if st.locked and code != st.part_number:
-            self.banner.show("LOCKED", theme.NG, "Resolve the NG before changing the part")
+            self.part.set(st.part_number)
+            self.banner.show("LOCKED", style.NG, "Resolve the NG before changing the part")
             return
         self.set_part(code)
-        self.banner.show("READY", theme.IDLE, f"{code} selected")
+        if code in self.cfg.parts:
+            self.banner.show("READY", style.IDLE, f"{code} selected")
 
     def on_scan(self) -> None:
-        text = self.scan.get()
-        self.scan.delete(0, "end")
+        """Enter in the part box: a barcode scanner types the code followed by Enter."""
+        text = self.part.get()
         s = parse_scan(text, self.cfg.barcode, set(self.cfg.parts))
         if s.kind == "operator":
             self.operator.delete(0, "end")
             self.operator.insert(0, s.value)
+            self.set_part(self.station.lock.state.part_number if self.station.lock.locked else "")
         elif s.kind == "part":
             self._change_part(s.value)
         else:
-            self.banner.show("UNKNOWN", theme.WARN, f"Not a known part number: {text.strip()[:30]}")
+            self.set_part(text.strip())
+            self.banner.show("UNKNOWN", style.WARN, f"Not a known part number: {text.strip()[:30]}")
 
     def focus_scan(self) -> None:
-        self.scan.focus_set()
+        self.part.focus_set()
 
-    # -- preview -------------------------------------------------------------
+    # -- camera preview ------------------------------------------------------------
     def _preview_tick(self) -> None:
         try:
             if not self._showing_result and self.winfo_ismapped():
@@ -173,21 +135,18 @@ class InspectPage(ctk.CTkFrame):
                 if frame is not None:
                     self.view.set_image(frame)
                 err = getattr(self.station.source, "error", "")
-                if err:
+                if err and not self.busy:
                     self.timing.configure(text=f"Camera: {err}")
-        finally:
-            self._preview_job = self.after(self._preview_ms, self._preview_tick)
+        except tk.TclError:
+            return
+        self._preview_job = self.after(self._preview_ms, self._preview_tick)
 
-    def _on_view_mode(self, value: str) -> None:
-        if value == "Live":
-            self._showing_result = False
-            self._file_image = None
-        elif self._last_annotated is not None:
-            self._showing_result = True
-            self.view.set_image(self._last_annotated)
+    def live_view(self) -> None:
+        self._showing_result = False
+        self._file_image = None
 
     def load_image(self) -> None:
-        path = filedialog.askopenfilename(parent=self, title="Load board image",
+        path = filedialog.askopenfilename(parent=self, title="Inspect an image file",
                                           filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.tif"), ("All", "*.*")])
         if not path:
             return
@@ -201,25 +160,27 @@ class InspectPage(ctk.CTkFrame):
         else:
             self._file_image = img  # camera mode: the next inspection uses this file
         self._showing_result = False
-        self.view_mode.set("Live")
         self.view.set_image(img)
+        self.inspect()
 
-    # -- inspection ---------------------------------------------------------
+    # -- inspection ------------------------------------------------------------------
     def inspect(self) -> None:
         if self.busy:
             return
         part = self.part_code
-        if not part:
-            self.banner.show("NO PART", theme.WARN, "Scan or choose a part number first")
+        if part not in self.cfg.parts:
+            self.banner.show("NO PART", style.WARN, "Scan or choose a part number first")
             return
         ok, why = self.station.can_inspect(part)
         if not ok:
-            self.banner.show("LOCKED", theme.NG, why)
+            self.banner.show("LOCKED", style.NG, why)
             return
         self.busy = True
         self.inspect_btn.configure(state="disabled", text="Inspecting ...")
+        self.banner.show("...", style.IDLE, f"Inspecting {part}")
         image, operator = self._file_image, self.operator.get().strip()
-        self.dispatcher.run_task(lambda: self.station.inspect(part, operator, image=image), self._on_result, self._on_error)
+        self.dispatcher.run_task(lambda: self.station.inspect(part, operator, image=image), self._on_result,
+                                 self._on_error)
 
     def _on_result(self, res: StationResult) -> None:
         self.busy = False
@@ -227,17 +188,16 @@ class InspectPage(ctk.CTkFrame):
         rep = res.report
         self._last_annotated = res.annotated
         self._showing_result = True
-        self.view_mode.set("Last result")
         self.view.set_image(res.annotated)
         if rep.ok:
-            self.banner.show("OK", theme.OK, f"{rep.part_number}: all {len(rep.positions)} clips correct")
+            self.banner.show("OK", style.OK, f"{rep.part_number}: all {len(rep.positions)} clips correct")
         else:
             n = len(rep.mismatches) + len(rep.extras)
-            self.banner.show("NG", theme.NG, rep.error or f"{n} finding(s) - see the list below")
-        self._set_findings(self._finding_rows(rep))
+            self.banner.show("NG", style.NG, rep.error or f"{n} wrong position(s) - see the list")
+        self._show_findings(rep)
         err = self.station.alert.last_error
-        self.timing.configure(text=f"#{res.inspection_id}  {rep.duration_ms:.0f} ms  ·  alert {res.alert_latency_ms:.0f} ms"
-                                   f"  ·  {rep.detector}" + (f"  ·  ALERT FAULT: {err}" if err else ""))
+        self.timing.configure(text=f"#{res.inspection_id}  ·  {rep.duration_ms:.0f} ms  ·  {rep.detector}"
+                                   + (f"  ·  ALERT FAULT: {err}" if err else ""))
         self.update_lock_ui()
         self._update_stats()
         self.focus_scan()
@@ -246,83 +206,55 @@ class InspectPage(ctk.CTkFrame):
         self.busy = False
         self.update_lock_ui()
         if isinstance(exc, StationLocked):
-            self.banner.show("LOCKED", theme.NG, str(exc))
+            self.banner.show("LOCKED", style.NG, str(exc))
             return
         self.station.alert.ng()  # a failed inspection is never silently OK
-        self.banner.show("ERROR", theme.NG, str(exc)[:120])
+        self.banner.show("ERROR", style.NG, str(exc)[:160])
 
-    @staticmethod
-    def _finding_rows(rep) -> list[tuple[str, str, str, str]]:
-        """(color, place, text, confidence)"""
+    def _show_findings(self, rep) -> None:
         rows = []
         if rep.error:
-            rows.append((theme.NG, "Board", rep.error, ""))
-        for p in rep.mismatches:
+            rows.append(("err", ("Board", "-", rep.error[:60], ""), ("ng",)))
+        for p in rep.positions:
             if p.found == MISSING:
-                text = f"missing - expected {p.expected}"
-                conf = ""
-            elif p.found == "uncertain":
-                text = f"unsure - {p.reason}"
-                conf = f"{p.confidence:.0%}"
+                found, conf = "missing", ""
+            elif p.found == UNCERTAIN:
+                found, conf = "unsure", f"{p.confidence:.0%}"
             else:
-                text = f"found {p.found}, expected {p.expected}"
-                conf = f"{p.confidence:.0%}"
-            rows.append((theme.NG, f"C{p.cable} · R{p.row}", text, conf))
-        for b in rep.extras:
-            rows.append((theme.WARN, "Extra", f"unexpected {b.label} at x={b.center[0]:.0f}, y={b.center[1]:.0f}",
-                         f"{b.confidence:.0%}"))
-        return rows
-
-    def _set_findings(self, rows: list[tuple[str, str, str, str]]) -> None:
-        for w in self.findings.winfo_children():
-            w.destroy()
-        if not rows:
-            muted(self.findings, "No findings.", 13).pack(anchor="w", pady=4)
-            return
-        for color, place, text, conf in rows:
-            r = ctk.CTkFrame(self.findings, fg_color=theme.SURFACE_2, corner_radius=10)
-            r.pack(fill="x", pady=3)
-            ctk.CTkFrame(r, width=6, height=1, fg_color=color, corner_radius=3).pack(side="left", fill="y", padx=(0, 10), pady=6)
-            ctk.CTkLabel(r, text=place, font=theme.font(14, "bold"), text_color=theme.TEXT, width=70, anchor="w").pack(side="left")
-            ctk.CTkLabel(r, text=text, font=theme.font(13), text_color=theme.TEXT, anchor="w", justify="left",
-                         wraplength=250).pack(side="left", fill="x", expand=True, pady=8)
-            if conf:
-                muted(r, conf, 13).pack(side="right", padx=10)
+                found, conf = p.found, f"{p.confidence:.0%}"
+            rows.append((f"{p.cable}-{p.row}", (f"C{p.cable} R{p.row}", p.expected, found, conf),
+                         ("ok",) if p.ok else ("ng",)))
+        rows.sort(key=lambda r: "ok" in r[2])  # problems first
+        for i, b in enumerate(rep.extras):
+            rows.insert(0, (f"extra{i}", ("Extra", "-", f"unexpected {b.label}", f"{b.confidence:.0%}"), ("ng",)))
+        self.findings.set_rows(rows, keep_selection=False)
 
     @property
     def finding_texts(self) -> list[str]:
-        """Plain text of the findings list (used by tests)."""
-        out = []
-        for row in self.findings.winfo_children():
-            if isinstance(row, ctk.CTkLabel):
-                out.append(str(row.cget("text")))
-                continue
-            labels = [w.cget("text") for w in row.winfo_children() if isinstance(w, ctk.CTkLabel)]
-            out.append(" ".join(str(t) for t in labels))
-        return out
+        """Plain text of the findings table (used by tests)."""
+        t = self.findings.tree
+        return [" ".join(str(v) for v in t.item(i, "values")) for i in t.get_children()]
 
-    # -- lock ------------------------------------------------------------------
+    # -- NG lock -------------------------------------------------------------------------
     def update_lock_ui(self) -> None:
         st = self.station.lock.state
         key = self.cfg.trigger.key
         if st.locked:
-            self.ack_btn.pack(fill="x", pady=(10, 0))
-            self.pick_btn.configure(state="disabled")
+            self.ack_btn.grid(row=7, column=0, sticky="ew", pady=(8, 0))
             self.inspect_btn.configure(state="normal", text=f"RE-INSPECT {st.part_number}   [{key}]")
         else:
-            self.ack_btn.pack_forget()
-            self.pick_btn.configure(state="normal")
-            self.inspect_btn.configure(state="normal" if not self.busy else "disabled", text=f"INSPECT   [{key}]")
-        self.app.set_navigation_locked(st.locked)
+            self.ack_btn.grid_remove()
+            self.inspect_btn.configure(state="disabled" if self.busy else "normal", text=f"INSPECT   [{key}]")
+        self.app.set_locked(st.locked)
 
     def acknowledge(self) -> None:
-        pin = PinDialog.ask(self, "Supervisor PIN")
+        pin = ask_string(self, "Supervisor unlock", "Supervisor PIN:", secret=True)
         if pin is None:
             return
         if self.station.acknowledge(pin, self.operator.get().strip()):
-            self.banner.show("RELEASED", theme.WARN, "Station unlocked by supervisor")
+            self.banner.show("RELEASED", style.WARN, "Station unlocked by supervisor")
         else:
-            self.banner.show("WRONG PIN", theme.NG, "Station remains locked")
+            self.banner.show("WRONG PIN", style.NG, "Station remains locked")
         self.update_lock_ui()
 
     def _update_stats(self) -> None:
@@ -332,7 +264,13 @@ class InspectPage(ctk.CTkFrame):
             return
         self.stats.configure(text=f"Today: {rep.total} inspected  ·  {rep.ok} OK  ·  {rep.ng} NG  ({rep.ng_rate:.1%})")
 
+    def on_show(self) -> None:
+        self.focus_scan()
+
     def stop(self) -> None:
         if self._preview_job is not None:
-            self.after_cancel(self._preview_job)
+            try:
+                self.after_cancel(self._preview_job)
+            except tk.TclError:
+                pass
             self._preview_job = None

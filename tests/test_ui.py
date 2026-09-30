@@ -1,43 +1,45 @@
-"""UI tests: drive the real CustomTkinter window (skipped where no display is available).
+"""UI tests: drive the real tkinter window (skipped where no display is available).
 
-Modal dialogs are replaced by recorders so the tests never block.
+Message boxes and input dialogs are replaced by recorders so the tests never block.
 """
 
 import shutil
 import time
 import tkinter as tk
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-ctk = pytest.importorskip("customtkinter")
-
-from fc_comparator.alert import AlertController, ConsoleAlert  # noqa: E402
-from fc_comparator.annotations import AnnotationStore  # noqa: E402
-from fc_comparator.capture import FileSource  # noqa: E402
-from fc_comparator.capture.sources import write_image  # noqa: E402
-from fc_comparator.config import load_config, save_config  # noqa: E402
-from fc_comparator.pipeline import Inspector, Station  # noqa: E402
-from fc_comparator.synthetic import Geometry, render_marked_board  # noqa: E402
-from fc_comparator.ui.pages import setup as setup_page  # noqa: E402
+from fc_comparator.config import AppConfig, load_config, save_config
+from fc_comparator.station import Inspector, Station
+from fc_comparator.station.alerts import AlertController, ConsoleAlert
+from fc_comparator.station.security import verify_secret
+from fc_comparator.vision.camera import FileSource, write_image
+from fc_comparator.vision.dataset import AnnotationStore
+from fc_comparator.vision.synthetic import Geometry, render_marked_board
 
 ROOT = Path(__file__).resolve().parents[1]
-BOARDS = ROOT / "samples" / "boards"
+FIXTURES = ROOT / "tests" / "fixtures"
+BOARDS = FIXTURES / "boards"
 pytestmark = pytest.mark.ui
 
 
 @pytest.fixture(scope="module")
 def tk_root():
+    from fc_comparator.ui import style
+
     error = None
     for _ in range(3):  # loading Tk's library files occasionally fails transiently on Windows
         try:
-            r = ctk.CTk()
+            r = tk.Tk()
             break
         except tk.TclError as exc:
             error = exc
             time.sleep(0.5)
     else:
         pytest.skip(f"no usable Tk display: {error}")
+    style.apply(r)
     r.withdraw()
     yield r
     r.destroy()
@@ -45,31 +47,23 @@ def tk_root():
 
 @pytest.fixture(scope="module")
 def shared_detector():
-    return Inspector.from_config(load_config(ROOT / "config" / "config.yaml")).detector
+    return Inspector.from_config(load_config(FIXTURES / "config.yaml")).detector
 
 
 @pytest.fixture
 def dialogs(monkeypatch):
-    """Record dialogs; answer yes; hand out queued PINs and form answers."""
+    """Record message boxes; answer yes; hand out queued answers for input dialogs."""
     from fc_comparator.ui import main_window, widgets
-    from fc_comparator.ui.pages import history, inspect, settings, setup
+    from fc_comparator.ui.pages import history, inspect, parts, settings, training
 
-    shown = {"error": [], "info": [], "pins": [], "fields": [], "yes": True}
-    for mod in (main_window, widgets, history, inspect, settings, setup):
+    shown = {"error": [], "info": [], "answers": [], "yes": True}
+    for mod in (main_window, widgets, history, inspect, parts, settings, training):
         for name, fn in (("show_error", lambda _p, text, *a, **k: shown["error"].append(text)),
                          ("show_info", lambda _p, text, *a, **k: shown["info"].append(text)),
                          ("ask_yes_no", lambda *_a, **_k: shown["yes"]),
-                         ("ask_fields", lambda *_a, **_k: shown["fields"].pop(0) if shown["fields"] else None)):
+                         ("ask_string", lambda *_a, **_k: shown["answers"].pop(0) if shown["answers"] else None)):
             if hasattr(mod, name):
                 monkeypatch.setattr(mod, name, fn)
-
-    class FakePin:
-        @staticmethod
-        def ask(_parent, _title, numeric_only=True):
-            return shown["pins"].pop(0) if shown["pins"] else None
-
-    for mod in (main_window, inspect, settings):
-        monkeypatch.setattr(mod, "PinDialog", FakePin)
     return shown
 
 
@@ -77,23 +71,25 @@ def dialogs(monkeypatch):
 def app(tk_root, tmp_path, dialogs, shared_detector):
     from fc_comparator.ui.main_window import MainWindow
 
-    shutil.copytree(ROOT / "samples" / "annotations", tmp_path / "annotations")
-    cfg = load_config(ROOT / "config" / "config.yaml")
-    cfg.annotations.dir = str(tmp_path / "annotations")
+    shutil.copytree(FIXTURES / "annotations", tmp_path / "annotations")
+    cfg = load_config(FIXTURES / "config.yaml")
+    cfg.dataset.dir = str(tmp_path / "annotations")
     cfg.camera.file_path = str(cfg.resolve(cfg.camera.file_path))
     cfg.detector.model_path = str(tmp_path / "models" / "none.pt")
     cfg.storage.database = str(tmp_path / "db.sqlite")
     cfg.storage.image_dir = str(tmp_path / "images")
     save_config(cfg, tmp_path / "config.yaml")
-    top = ctk.CTkToplevel(tk_root)
+    top = tk.Toplevel(tk_root)
     top.geometry("1500x950")
     station = Station(cfg, source=FileSource(BOARDS / "board_P001_ok.jpg"),
                       alert=AlertController(ConsoleAlert(), cfg.alert),
                       inspector=Inspector(cfg, shared_detector))
     station.reload = lambda: None  # keep the shared detector (rebuilding takes seconds)
     station.open()
-    win = MainWindow(top, station)
+    logged_out = []
+    win = MainWindow(top, station, user="nice", on_logout=lambda: logged_out.append(True))
     win.pack(fill="both", expand=True)
+    win.logged_out = logged_out
     top.update()
     yield win
     win.shutdown()
@@ -112,177 +108,223 @@ def settle(root, until=lambda: True, timeout=15.0):
         root.update()
 
 
+class Ev:
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+
+
+def draw(canvas, box):
+    (ax, ay), (bx, by) = canvas.to_canvas(box.x, box.y), canvas.to_canvas(box.x + box.w, box.y + box.h)
+    canvas._press(Ev(ax, ay))
+    canvas._motion(Ev(bx, by))
+    canvas._release(Ev(bx, by))
+
+
+def test_login_page(tk_root):
+    from fc_comparator.ui.login import LoginPage
+
+    events, logins = [], []
+    page = LoginPage(tk_root, load_config(ROOT / "config" / "config.yaml"), logins.append,
+                     lambda kind, user, _detail: events.append((kind, user)))
+    for user, password in (("nice", "wrong"), ("other", "nice1234"), ("", "")):
+        page.reset()
+        page.user.insert(0, user)
+        page.password.insert(0, password)
+        assert not page.submit() and "Wrong" in page.error.cget("text") and page.password.get() == ""
+    page.reset()
+    page.user.insert(0, "nice")
+    page.password.insert(0, "nice1234")
+    assert page.submit() and logins == ["nice"]
+    assert events == [("login_denied", "nice"), ("login_denied", "other"), ("login_denied", ""), ("login", "nice")]
+    assert LoginPage(tk_root, AppConfig(), logins.append).check("nice", "nice1234")  # built-in default
+    page.destroy()
+
+
+def test_logout(app):
+    app.logout()
+    assert app.logged_out and app.station.store.events()[-1]["kind"] == "logout"
+
+
 def test_inspect_flow_lock_and_history(app, dialogs):
     page = app.inspect
-    page.scan.insert(0, "OP:77")
+    page.part.set("OP:77")
     page.on_scan()
     assert page.operator.get() == "77"
-    page.scan.insert(0, "P002")
+    page.part.set("P002")
     page.on_scan()
-    assert page.part_code == "P002" and "R1 fork_right" in [w.cget("text").strip() for w in page.chips.winfo_children()]
+    assert page.part_code == "P002" and "Row 1: fork_right" in page.part_info.cget("text")
 
     page.set_part("P001")
     page.inspect()
     settle(app.root, lambda: not page.busy)
-    assert page.banner.text == "OK" and page.finding_texts == ["No findings."]
+    assert page.banner.text == "OK" and len(page.finding_texts) == 16
 
     app.station.source.load(BOARDS / "board_P001_mixed.jpg")
     app.pedal_pressed()  # foot pedal / F9
     settle(app.root, lambda: not page.busy)
     assert page.banner.text == "NG"
-    assert any("C3" in t and "found fork_right, expected round" in t for t in page.finding_texts)
-    assert app.station.lock.locked and page.ack_btn.winfo_manager() == "pack"
-    assert app.nav_buttons["settings"].cget("state") == "disabled"
+    assert any(t.startswith("C3 R1 round fork_right") for t in page.finding_texts)
+    assert app.station.lock.locked and page.ack_btn.winfo_manager() == "grid"
+    assert str(app.tabs.tab(app.pages["settings"], "state")) == "disabled"
+    assert not app.go("parts") and "locked" in dialogs["error"][-1]
 
-    page.scan.insert(0, "P002")  # cannot switch part while locked
+    page.part.set("P002")  # cannot switch part while locked
     page.on_scan()
     assert page.part_code == "P001" and page.banner.text == "LOCKED"
 
-    dialogs["pins"] += ["0000"]
+    dialogs["answers"] += ["0000"]
     page.acknowledge()
     assert app.station.lock.locked and page.banner.text == "WRONG PIN"
-    dialogs["pins"] += ["1234"]
+    dialogs["answers"] += ["1234"]
     page.acknowledge()
     settle(app.root)
     assert not app.station.lock.locked and page.ack_btn.winfo_manager() == ""
+    assert str(app.tabs.tab(app.pages["settings"], "state")) == "normal"
 
     assert app.go("history")
-    app.pages["history"].refresh()
-    tree = app.pages["history"].table.tree
+    history = app.pages["history"]
+    tree = history.table.tree
     assert len(tree.get_children()) == 2
     tree.selection_set(tree.get_children()[0])
     settle(app.root)
-    assert "unexpected" not in app.pages["history"].detail.get("1.0", "end")
-    assert "expected round, found fork_right" in app.pages["history"].detail.get("1.0", "end")
+    text = history.detail.get("1.0", "end")
+    assert "expected round, found fork_right" in text and "unexpected" not in text
 
 
-def test_setup_flow_new_part_annotate_reference_train(app, dialogs, tmp_path, monkeypatch):
-    dialogs["pins"] += ["5678"]
-    assert app.go("setup") and app.admin
-    page = app.pages["setup"]
-
-    # 1. a new part number
-    dialogs["fields"].append(["P004", "Harness D"])
-    page.new_part()
-    assert page.code == "P004" and "Not ready" in page.part_info.cget("text")
-    assert page.table.tree.get_children() == ()  # no images of P004 yet
-
-    # 2. upload a good board of it (another layout than the sample parts)
+def test_new_part_from_a_good_board(app, dialogs, tmp_path):
+    """Parts tab: the clips of a good board of a new layout become part P004's master."""
+    assert app.go("parts")
+    page = app.pages["parts"]
     geo = Geometry(cable_x0=300, cable_dx=220, row_y0=280, row_dy=200)
-    pattern = ["fork_right", "small", "round"]
-    img, boxes = render_marked_board([pattern] * 5, seed=5, geometry=geo)
-    photo = write_image(tmp_path / "upload" / "p004_good.jpg", img)
-    page._import([photo])
-    settle(app.root, lambda: dialogs["info"])
-    assert "Added 1 image(s) to P004" in dialogs["info"][-1]
-    image_id = next(r.id for r in page.store.records() if r.source_name == "p004_good.jpg")
-    assert page.store.get(image_id).part == "P004"
-    settle(app.root, lambda: page.image_id == image_id)
-    assert page.canvas.image is not None and page.canvas.boxes == []
+    columns = [["fork_right", "small", "round"]] * 4 + [["fork_right", "round", "round"]]  # cable 5 differs
+    img, boxes = render_marked_board(columns, seed=5, geometry=geo)
 
-    # 3. annotate every clip through the canvas' own mouse handling
+    editor = page.open_editor(img, boxes[:-1], None)  # one clip not found yet
+    settle(app.root)
+    assert "cable 5 row 3 has no clip" in editor.status.cget("text")
+    assert str(editor.save_btn.cget("state")) == "disabled"
+    editor.clip.set("round")
+    editor.canvas.set_class("round")
+    draw(editor.canvas, boxes[-1])  # the operator adds the missing box
+    settle(app.root)
+    assert "5 cables x 3 rows" in editor.status.cget("text")
+    editor.code.insert(0, "P004")
+    editor.desc.insert(0, "Harness D")
+    part = editor.save()
+    assert part is not None and "Saved P004" in dialogs["info"][-1]
+
+    saved = load_config(tmp_path / "config.yaml").parts["P004"]
+    assert saved.pattern == [["fork_right"] * 5, ["small"] * 4 + ["round"], ["round"] * 5]
+    assert saved.description == "Harness D" and saved.layout is not None
+    rec = AnnotationStore(tmp_path / "annotations").get(saved.master_image)  # photo kept in the data set
+    assert rec.good and rec.part == "P004" and len(rec.boxes) == 15
+    assert page.table.selected() == "P004"
+    assert app.inspect.part.cget("values")[-1] == "P004"
+
+    # editing keeps the same master photo (no duplicate in the data set)
+    n_images = len(page.station.dataset)
+    page.edit_selected()
+    editor = next(w for w in page.winfo_children() if type(w).__name__ == "PartEditor")
+    settle(app.root)
+    assert editor.code.get() == "P004" and len(editor.canvas.boxes) == 15
+    assert editor.save() is not None
+    assert len(page.station.dataset) == n_images
+    assert app.cfg.parts["P004"].master_image == saved.master_image
+
+    # inspect a board of the new part with a clip missing
+    test_cols = [list(c) for c in columns]
+    test_cols[2][1] = "missing"
+    app.inspect.set_part("P004")
+    app.station.source.set_image(render_marked_board(test_cols, seed=6, geometry=geo, shift=(15, -10))[0])
+    app.go("inspect")
+    app.inspect.inspect()
+    settle(app.root, lambda: not app.inspect.busy)
+    assert app.inspect.banner.text == "NG"
+    assert any(t.startswith("C3 R2 small missing") for t in app.inspect.finding_texts)
+
+
+def test_training_tab_marking_and_training(app, dialogs, tmp_path, monkeypatch):
+    assert app.go("training")
+    page = app.pages["training"]
+    img, boxes = render_marked_board([["fork_right", "small", "round"]] * 3, seed=9,
+                                     geometry=Geometry(cable_x0=300, cable_dx=250, row_y0=280, row_dy=220))
+    photo = write_image(tmp_path / "new" / "board_new.jpg", img)
+    page._add([photo])
+    assert "Added 1 image" in dialogs["info"][-1]
+    image_id = next(r.id for r in page.store.records() if r.source_name == "board_new.jpg")
+    page.table.select(image_id)
+    settle(app.root, lambda: page.current == image_id)
     canvas = page.canvas
-
-    class Ev:
-        def __init__(self, x, y):
-            self.x, self.y = x, y
+    assert canvas.image is not None and canvas.boxes == []
 
     for b in boxes:
-        page._choose_class(b.label)
-        (ax, ay), (bx, by) = canvas.to_canvas(b.x, b.y), canvas.to_canvas(b.x + b.w, b.y + b.h)
-        canvas._press(Ev(ax, ay))
-        canvas._motion(Ev(bx, by))
-        canvas._release(Ev(bx, by))
-    saved = AnnotationStore(tmp_path / "annotations").get(image_id).boxes  # auto-saved to disk
-    assert len(saved) == 15 and [b.label for b in saved] == [b.label for b in boxes]
-    assert abs(saved[0].x - boxes[0].x) < 3
+        page.clip.set(b.label)
+        canvas.set_class(b.label)
+        draw(canvas, b)
+    saved = AnnotationStore(tmp_path / "annotations").get(image_id).boxes  # saved automatically
+    assert [b.label for b in saved] == [b.label for b in boxes] and abs(saved[0].x - boxes[0].x) < 3
+    assert page.table.tree.item(image_id, "values")[1] == "9"
 
-    # undo / delete / keyboard class change
     canvas._select(0)
-    canvas._digit(4)  # key 4 -> small
-    assert canvas.boxes[0].label == "small"
+    canvas._digit(2)  # key 2 -> second clip type
+    assert canvas.boxes[0].label == app.cfg.taxonomy.classes[1]
     canvas.undo()
     assert canvas.boxes[0].label == "fork_right"
     canvas._select(0)
     canvas.delete_selected()
-    assert len(canvas.boxes) == 14
+    assert len(canvas.boxes) == 8
     canvas.undo()
-    assert len(canvas.boxes) == 15
+    assert len(canvas.boxes) == 9
 
-    # the annotated good board becomes the part's reference
-    dialogs["fields"].append(["Harness D"])
-    page.make_reference()
-    assert "P004 is ready" in dialogs["info"][-1]
-    part = app.cfg.parts["P004"]
-    assert (part.cables, part.rows, part.pattern, part.master_image) == (5, 3, pattern, image_id)
-    assert part.description == "Harness D"
-    assert load_config(tmp_path / "config.yaml").parts["P004"].layout is not None
-    assert page.store.get(image_id).good
-    assert page.table.tree.item(image_id, "values")[0].startswith("★")
+    # training: progress lines update the bar; the result is reported
+    from fc_comparator.vision import training
 
-    # 4. train; a model below the target is used only when the user agrees
-    from types import SimpleNamespace
+    def fake_train(cfg, store, progress, stop, epochs):
+        progress("epoch 3/5  loss 1.000")
+        return SimpleNamespace(evaluation=SimpleNamespace(accuracy=0.97), epochs_run=5, seconds=60.0)
 
-    ev = SimpleNamespace(accuracy=0.8, missed_clips=2, false_clips=1, images=3)
-    monkeypatch.setattr(setup_page, "train_detector",
-                        lambda *a, **k: SimpleNamespace(evaluation=ev, epochs_run=5, stopped=False))
-    page.epochs.delete(0, "end")
-    page.epochs.insert(0, "5")
-    page.start_training()
+    monkeypatch.setattr(training, "train_detector", fake_train)
+    page.epochs.set(5)
+    page.train()
     settle(app.root, lambda: not page.training)
-    assert "Validation accuracy 80.0%" in dialogs["info"][-1] and "new model" in dialogs["info"][-1]
-    assert load_config(tmp_path / "config.yaml").detector.backend == "yolo"
-    dialogs["yes"] = False
-    page.start_training()
+    assert "97.0% and is now in use" in dialogs["info"][-1]
+    assert "epoch 3/5" in page.log.get("1.0", "end")
+
+    monkeypatch.setattr(training, "train_detector", lambda *a, **k: SimpleNamespace(
+        evaluation=SimpleNamespace(accuracy=0.5), epochs_run=5, seconds=60.0))
+    page.train()
     settle(app.root, lambda: not page.training)
-    assert "keeps template matching" in dialogs["info"][-1] and app.cfg.detector.backend == "auto"
+    assert "keeps the previous detector" in dialogs["info"][-1]
 
-    # leaving Setup selects the new part for inspection
-    app.go("inspect")
-    assert app.inspect.part_code == "P004"
+    # an image that is a part's master cannot be deleted
+    page.table.select(app.cfg.parts["P001"].master_image)
+    settle(app.root)
+    page.delete_image()
+    assert "master photo of P001" in dialogs["error"][-1]
 
 
-def test_password_gate_and_settings(app, dialogs):
-    assert not app.go("setup")  # dialog cancelled
-    dialogs["pins"] += ["9999"]
-    assert not app.go("setup") and "not correct" in dialogs["error"][-1]
-    dialogs["pins"] += ["5678"]
-    assert app.go("setup") and app.current == "setup"
-
-    page = app.pages["setup"]
-    page.select_part("P003")
-    page.scope.set("This part")
-    page.refresh_list()
-    assert [page.store.get(i).part for i in page.table.tree.get_children()] == ["P003"]
-    assert "5 cables" in page.part_info.cget("text") or "reference board set" in page.part_info.cget("text")
-    page.scope.set("All parts")
-    page.refresh_list()
-    assert len(page.table.tree.get_children()) == len(page.store)
-
+def test_settings_save_and_security(app, dialogs, tmp_path):
     assert app.go("settings")
     s = app.pages["settings"]
-    s.v["detector.confidence_threshold"][0].set("0.7")
-    s._add_class_row("")
-    s.class_rows[-1][1].insert(0, "clamp")
-    s.save()
-    saved = load_config(app.cfg.path)
-    assert saved.detector.confidence_threshold == pytest.approx(0.7)
-    assert saved.taxonomy.classes[-1] == "clamp"
-    assert "Clip types changed" in dialogs["info"][-1]
+    s.vars["detector.confidence_threshold"][0].set("0.7")
+    s.vars["station.name"][0].set("Line 2")
+    assert s.save()
+    saved = load_config(tmp_path / "config.yaml")
+    assert saved.detector.confidence_threshold == pytest.approx(0.7) and saved.station.name == "Line 2"
 
-    # renaming a clip type updates markings and part patterns
-    entry = next(e for name, e, _r in s.class_rows if name == "small")
-    entry.delete(0, "end")
-    entry.insert(0, "fir_tree")
-    s.save()
-    assert "fir_tree" in app.cfg.taxonomy.classes and "small" not in app.cfg.taxonomy.classes
-    assert app.cfg.parts["P001"].pattern[2] == "fir_tree"
-    assert "fir_tree" in app.station.annotations.stats()["per_class"]
+    s.vars["detector.confidence_threshold"][0].set("abc")
+    assert not s.save() and "not a valid value" in dialogs["error"][-1]
+    s.vars["detector.confidence_threshold"][0].set("0.1")  # below min_score
+    assert not s.save() and "min_score" in dialogs["error"][-1]
+    assert app.cfg.detector.confidence_threshold == pytest.approx(0.7)  # rejected values are not kept
 
-    # a clip type still in use cannot be removed
-    in_use = next(r for r in s.class_rows if r[0] == "round")
-    s._remove_class_row(in_use)
-    assert "still used" in dialogs["error"][-1]
-
-    app.leave_admin()
-    assert app.current == "inspect" and not app.admin
+    dialogs["answers"] += ["operator", "abcd1234", "abcd1234"]
+    s.change_login()
+    sec = load_config(tmp_path / "config.yaml").security
+    assert sec.login_user == "operator" and verify_secret("abcd1234", sec.login_password)
+    dialogs["answers"] += ["operator", "abcd1234", "other"]
+    s.change_login()
+    assert "did not match" in dialogs["error"][-1]
+    dialogs["answers"] += ["9876", "9876"]
+    s.change_pin()
+    assert verify_secret("9876", app.station.lock.pin_hash)

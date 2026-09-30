@@ -4,8 +4,18 @@ from datetime import date, datetime, timedelta
 import numpy as np
 import pytest
 
-from fc_comparator.models import Box, InspectionReport, PlacementInfo, PositionResult
-from fc_comparator.storage import ImageSaver, InspectionStore, export_csv, export_excel
+from fc_comparator.core.models import (
+    Box,
+    InspectionReport,
+    PlacementInfo,
+    PositionResult,
+)
+from fc_comparator.station.storage import (
+    ImageSaver,
+    InspectionStore,
+    export_csv,
+    export_excel,
+)
 
 
 def report(ok_positions: int, bad: list[tuple[int, int, str, str]], ts: datetime, part="P001", extras=()) -> InspectionReport:

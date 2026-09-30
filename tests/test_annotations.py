@@ -2,10 +2,10 @@ import cv2
 import numpy as np
 import pytest
 
-from fc_comparator.annotations import AnnotationStore
-from fc_comparator.capture.sources import write_image
-from fc_comparator.models import Box
-from fc_comparator.synthetic import render_marked_board
+from fc_comparator.core.models import Box
+from fc_comparator.vision.camera import write_image
+from fc_comparator.vision.dataset import AnnotationStore
+from fc_comparator.vision.synthetic import render_marked_board
 
 
 @pytest.fixture

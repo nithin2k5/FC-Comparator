@@ -1,11 +1,16 @@
 import numpy as np
 import pytest
 
-from fc_comparator.annotations import AnnotationStore
 from fc_comparator.config import AppConfig, TemplateDetectorConfig
-from fc_comparator.detect import TemplateDetector
-from fc_comparator.models import Box, Taxonomy
-from fc_comparator.training import evaluate, export_yolo_dataset, samples_from_store, split_records
+from fc_comparator.core.models import Box, Taxonomy
+from fc_comparator.vision.dataset import AnnotationStore
+from fc_comparator.vision.detect import TemplateDetector
+from fc_comparator.vision.training import (
+    evaluate,
+    export_yolo_dataset,
+    samples_from_store,
+    split_records,
+)
 
 from .conftest import build_store
 
@@ -81,8 +86,8 @@ def test_evaluate_counts_errors():
 @pytest.mark.slow
 def test_train_detector_end_to_end(tmp_path, marked_store):
     pytest.importorskip("ultralytics")
-    from fc_comparator.detect.yolo import YoloDetector
-    from fc_comparator.training import train_detector
+    from fc_comparator.vision.detect.yolo import YoloDetector
+    from fc_comparator.vision.training import train_detector
 
     cfg = AppConfig(base_dir=tmp_path)
     cfg.detector.model_path = "models/det.pt"
