@@ -61,9 +61,10 @@ class AnnotationCanvas(tk.Canvas):
         self._undo: list[list[Box]] = []
         self._drag: dict | None = None
         self._pan: tuple | None = None
+        self._fitted = True  # keep the image fitted on resize until the user zooms or pans
         self._placeholder = "Upload images, then select one to mark its clips"
 
-        self.bind("<Configure>", lambda _e: self.redraw())
+        self.bind("<Configure>", lambda _e: self.fit() if self._fitted else self.redraw())
         self.bind("<ButtonPress-1>", self._press)
         self.bind("<B1-Motion>", self._motion)
         self.bind("<ButtonRelease-1>", self._release)
@@ -141,6 +142,7 @@ class AnnotationCanvas(tk.Canvas):
         if self.image is None:
             self.redraw()
             return
+        self._fitted = True
         ih, iw = self.image.shape[:2]
         w, h = max(self.winfo_width(), 50), max(self.winfo_height(), 50)
         self.scale = min(w / iw, h / ih) * 0.98
@@ -296,6 +298,7 @@ class AnnotationCanvas(tk.Canvas):
 
     def _pan_start(self, e) -> None:
         self._pan = (e.x, e.y, self.ox, self.oy)
+        self._fitted = False
         self.configure(cursor="fleur")
 
     def _pan_move(self, e) -> None:
@@ -309,6 +312,7 @@ class AnnotationCanvas(tk.Canvas):
     def _zoom(self, e, steps: int) -> None:
         if self.image is None:
             return
+        self._fitted = False
         ih, iw = self.image.shape[:2]
         fit = min(max(self.winfo_width(), 50) / iw, max(self.winfo_height(), 50) / ih)
         ix, iy = self.to_image(e.x, e.y)

@@ -351,6 +351,56 @@ class PinDialog(ModalDialog):
         return PinDialog(master, title, numeric_only).run()
 
 
+class CameraDialog(ModalDialog):
+    """Live camera view; every press of Capture hands a fresh frame to ``on_capture``."""
+
+    def __init__(self, master, source, on_capture: Callable[[np.ndarray], None], title: str = "Capture from camera",
+                 fps: int = 10):
+        super().__init__(master, title)
+        self.resizable(True, True)
+        self.geometry("960x700")
+        self.source = source
+        self.on_capture = on_capture
+        self.count = 0
+        self._ms = max(30, 1000 // max(1, fps))
+        self.view = ImageView(self, placeholder="Waiting for camera ...")
+        self.view.pack(fill="both", expand=True, padx=20, pady=(20, 10))
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack(fill="x", padx=20, pady=(0, 20))
+        self.info = muted(row, "Place the board, then press Capture (or Space) for each image.", 13)
+        self.info.pack(side="left")
+        button(row, "Done", self.cancel, "secondary", width=110).pack(side="right", padx=(8, 0))
+        button(row, "Capture  [Space]", self.capture, "primary", width=170).pack(side="right")
+        self.bind("<space>", lambda _e: self.capture())
+        self._job = self.after(50, self._tick)
+
+    def _tick(self) -> None:
+        frame = self.source.latest()
+        if frame is not None:
+            self.view.set_image(frame)
+        err = getattr(self.source, "error", "")
+        if err:
+            self.info.configure(text=f"Camera: {err}", text_color=theme.NG)
+        self._job = self.after(self._ms, self._tick)
+
+    def capture(self) -> None:
+        try:
+            frame = self.source.capture(timeout=3)
+            self.on_capture(frame)
+        except Exception as exc:
+            self.info.configure(text=f"Capture failed: {exc}", text_color=theme.NG)
+            return
+        self.count += 1
+        self.info.configure(text=f"{self.count} image(s) captured. Move the board and capture more, or press Done.",
+                            text_color=theme.OK)
+
+    def destroy(self) -> None:
+        if self._job is not None:
+            self.after_cancel(self._job)
+            self._job = None
+        super().destroy()
+
+
 class PartPicker(ModalDialog):
     """Searchable part list - works with hundreds of part numbers."""
 
