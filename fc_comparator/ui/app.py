@@ -27,6 +27,7 @@ def run(config_path: str) -> int:
     from . import style
     from .login import LoginPage
     from .main_window import MainWindow
+    from .widgets import center_window
 
     cfg = load_config(config_path)
     _dpi_aware()
@@ -63,7 +64,7 @@ def run(config_path: str) -> int:
         try:
             root.state("zoomed")  # Windows
         except tk.TclError:
-            root.geometry("1400x900")
+            center_window(root, None, 1400, 900)
 
     def on_close() -> None:
         if win is not None:

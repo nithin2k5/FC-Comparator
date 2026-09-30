@@ -7,7 +7,7 @@ import queue
 import threading
 import tkinter as tk
 from collections.abc import Callable, Sequence
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import messagebox, ttk
 
 import cv2
 import numpy as np
@@ -236,5 +236,63 @@ def ask_yes_no(parent, text: str, title: str = "Please confirm") -> bool:
     return bool(messagebox.askyesno(title, text, parent=parent))
 
 
+def center_window(win: tk.Toplevel, parent: tk.Misc | None = None, width: int | None = None,
+                  height: int | None = None) -> None:
+    """Place ``win`` in the centre of the application window (or of the screen), kept on screen."""
+    win.update_idletasks()
+    w = width or win.winfo_reqwidth()
+    h = height or win.winfo_reqheight()
+    top = parent.winfo_toplevel() if parent is not None else None
+    if top is not None and top.winfo_viewable():
+        cx, cy = top.winfo_rootx() + top.winfo_width() // 2, top.winfo_rooty() + top.winfo_height() // 2
+    else:
+        cx, cy = win.winfo_screenwidth() // 2, win.winfo_screenheight() // 2
+    x = max(0, min(cx - w // 2, win.winfo_screenwidth() - w))
+    y = max(0, min(cy - h // 2, win.winfo_screenheight() - h))
+    win.geometry(f"{w}x{h}+{x}+{y}")
+
+
+class InputDialog(tk.Toplevel):
+    """One-line input (text, password or PIN), modal and centred on the application window."""
+
+    def __init__(self, parent, title: str, prompt: str, initial: str = "", secret: bool = False):
+        super().__init__(parent)
+        self.withdraw()
+        self.title(title)
+        self.resizable(False, False)
+        self.configure(bg=style.BG)
+        self.transient(parent.winfo_toplevel())
+        self.result: str | None = None
+        body = ttk.Frame(self, padding=18)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=prompt).pack(anchor="w")
+        self.entry = ttk.Entry(body, width=34, font=style.font(12), show="*" if secret else "")
+        self.entry.insert(0, initial)
+        self.entry.pack(fill="x", pady=(4, 12))
+        row = ttk.Frame(body)
+        row.pack(fill="x")
+        ttk.Button(row, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(row, text="OK", style="Accent.TButton", command=self._ok).pack(side="right", padx=6)
+        self.bind("<Return>", lambda _e: self._ok())
+        self.bind("<Escape>", lambda _e: self.destroy())
+        center_window(self, parent)
+        self.deiconify()
+        self.entry.focus_set()
+        self.entry.select_range(0, "end")
+
+    def _ok(self) -> None:
+        self.result = self.entry.get()
+        self.destroy()
+
+    def run(self) -> str | None:
+        try:
+            self.wait_visibility()
+            self.grab_set()
+        except tk.TclError:
+            pass
+        self.master.wait_window(self)
+        return self.result
+
+
 def ask_string(parent, title: str, prompt: str, initial: str = "", secret: bool = False) -> str | None:
-    return simpledialog.askstring(title, prompt, parent=parent, initialvalue=initial, show="*" if secret else None)
+    return InputDialog(parent, title, prompt, initial, secret).run()
