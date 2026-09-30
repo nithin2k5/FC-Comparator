@@ -20,7 +20,7 @@ from ...vision.camera import read_image
 from ...vision.drawing import draw_boxes
 from .. import style
 from ..box_editor import AnnotationCanvas
-from ..widgets import ImageView, Table, ask_yes_no, card, show_error, show_info
+from ..widgets import ImageView, Table, ask_yes_no, card, center_window, show_error, show_info
 
 
 def pattern_rows(pattern: list[list[str]]) -> list[tuple[str, list[str], tuple]]:
@@ -194,8 +194,10 @@ class PartEditor(tk.Toplevel):
         self.part = part
         self.source = source
         self.title("Edit part" if part else "New part")
-        self.geometry("1280x860")
         self.minsize(1000, 700)
+        top = page.winfo_toplevel()
+        center_window(self, page, min(1280, max(1000, top.winfo_width() - 80)),
+                      min(860, max(700, top.winfo_height() - 80)))
         self.configure(bg=style.BG)
         self.transient(page.winfo_toplevel())
 
