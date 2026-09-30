@@ -17,7 +17,7 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 
-from ...capture.sources import IMAGE_EXTENSIONS
+from ...capture.sources import IMAGE_EXTENSIONS, CameraSource
 from ...config import save_config
 from ...layout import LayoutError
 from ...models import Box
@@ -121,11 +121,12 @@ class SetupPage(ctk.CTkFrame):
         cb.bind("<Configure>", lambda e: self.hint.configure(wraplength=max(200, e.width - 60)))
         tools = ctk.CTkFrame(cb, fg_color="transparent")
         tools.grid(row=3, column=0, sticky="ew", pady=(10, 0))
-        self.ref_btn = button(tools, "Use as reference board", self.make_reference, "primary", width=210)
-        self.ref_btn.pack(side="left")
-        button(tools, "Auto-mark", self.auto_mark, "secondary", width=110).pack(side="left", padx=(8, 0))
-        button(tools, "Delete image", self.delete_image, "danger", width=120).pack(side="right")
-        button(tools, "Clear", self.clear_boxes, "secondary", width=80).pack(side="right", padx=8)
+        tools.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="tools")  # shrink together on small screens
+        self.ref_btn = button(tools, "★ Set reference", self.make_reference, "primary", width=60)
+        self.ref_btn.grid(row=0, column=0, sticky="ew")
+        button(tools, "Auto-mark", self.auto_mark, "secondary", width=60).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        button(tools, "Clear", self.clear_boxes, "secondary", width=60).grid(row=0, column=2, sticky="ew", padx=(8, 0))
+        button(tools, "Delete image", self.delete_image, "danger", width=60).grid(row=0, column=3, sticky="ew", padx=(8, 0))
 
         # -- right: clip types, 4 train ---------------------------------------------
         right = ctk.CTkScrollableFrame(self, fg_color="transparent", width=300)
@@ -229,7 +230,7 @@ class SetupPage(ctk.CTkFrame):
         p = self.cfg.parts.get(self.code)
         if p is None:
             self.part_info.configure(text="Not ready for inspection yet: annotate a complete good board of this "
-                                          "part and press 'Use as reference board'.", text_color=theme.WARN)
+                                          "part and press '★ Set reference'.", text_color=theme.WARN)
             return
         desc = p.description or self.descriptions.get(self.code, "")
         ref = "reference board set" if p.layout is not None else "no reference board (pattern only)"
@@ -320,15 +321,39 @@ class SetupPage(ctk.CTkFrame):
         self.dispatcher.run_task(work, done, lambda e: show_error(self, str(e)))
 
     def open_camera(self) -> None:
+        source = self.station.source
+        if source.is_live:
+            self._show_camera(source)
+            return
+        # the station inspects image files (camera.source: file): use the camera just for capturing
+        cam = CameraSource(self.cfg.camera)
+        self.totals.configure(text=f"Opening camera {self.cfg.camera.index} ...")
+
+        def opened(_r):
+            try:
+                self._show_camera(cam)
+            finally:
+                cam.close()
+
+        def failed(exc):
+            cam.close()
+            self.refresh_list()
+            show_error(self, f"{exc}\n\nCheck the camera index and backend in Settings > Station & camera.",
+                       "Camera not available")
+
+        self.dispatcher.run_task(cam.open, opened, failed)
+
+    def _show_camera(self, source) -> None:
         added: list[str] = []
+        part = self.code
 
         def keep(frame) -> None:
-            image_id, new = self.store.add_image(frame, part=self.code,
-                                                 name=f"camera {datetime.now():%Y-%m-%d %H:%M:%S}")
-            if new:
-                added.append(image_id)
+            image_id, new = self.store.add_image(frame, part=part, name=f"camera {datetime.now():%Y-%m-%d %H:%M:%S}")
+            if not new:
+                raise ValueError("this frame is identical to an image already added")
+            added.append(image_id)
 
-        CameraDialog(self, self.station.source, keep, f"Capture images of {self.code}").run()
+        CameraDialog(self, source, keep, f"Capture images of {part}").run()
         self.refresh_list()
         if added:
             self.table.select(added[0])

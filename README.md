@@ -185,7 +185,7 @@ Open **Setup** in the sidebar (setup password). Work through the four numbered c
    a live view opens, and every **Capture** (or Space) adds a fresh frame. New images belong to the selected part.
    Duplicates are skipped. *This part / All parts* switches the list.
 3. **Annotate.** Select an image, pick the clip type (or press **1–9**) and drag a box around every clip. Markings save
-   automatically. On one complete known-good board press **Use as reference board**: the station works out the cables
+   automatically. On one complete known-good board press **★ Set reference**: the station works out the cables
    and rows, shows which clip became which position (C1 R1 …) and saves the part. From then on it can be inspected.
    The reference image is marked ★ in the list.
 4. **Train & detect.** Press **Train model**. Training runs in the background with progress and can be stopped. One

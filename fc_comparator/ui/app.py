@@ -26,15 +26,13 @@ def run(config_path: str) -> int:
         ctk.set_widget_scaling(cfg.ui.scale)
 
     root = ctk.CTk()
+    root.withdraw()  # show the window only once the station UI is built
     root.minsize(1200, 760)
-    splash = ctk.CTkLabel(root, text="Starting station ...\nloading detector", font=ctk.CTkFont(size=20))
-    splash.pack(expand=True)
-    root.update()
     station = Station(cfg)
     station.open()
-    splash.destroy()
     win = MainWindow(root, station)
     win.pack(fill="both", expand=True)
+    root.deiconify()
 
     if cfg.ui.fullscreen:
         root.attributes("-fullscreen", True)
