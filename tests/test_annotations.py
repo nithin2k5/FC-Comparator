@@ -56,13 +56,23 @@ def test_add_array_update_delete(tmp_path):
     assert len(store) == 0 and not f.exists()
 
 
-def test_rename_label_and_boxes_by_class(tmp_path, board):
+def test_labels_add_rename_merge_delete(tmp_path, board):
     store = AnnotationStore(tmp_path / "ann")
     image_id, _ = store.add_image(board[0])
     store.set_boxes(image_id, board[2])
+    assert store.labels == ["round", "fork_left", "small"]  # labels used by boxes are known
+    assert store.add_label(" tape ") == "tape" and store.labels[-1] == "tape"
+    with pytest.raises(ValueError):
+        store.add_label("two words")
     assert store.rename_label("small", "fir_tree") == 4
     by = store.boxes_by_class()
     assert set(by) == {"round", "fork_left", "fir_tree"} and len(by["round"]) == 8
+    assert store.labels == ["round", "fork_left", "fir_tree", "tape"]
+    assert store.rename_label("fir_tree", "round") == 4  # an existing name: merged
+    assert store.label_counts() == {"round": 12, "fork_left": 4, "tape": 0}
+    assert store.delete_label("fork_left") == 4
+    again = AnnotationStore(tmp_path / "ann")  # persisted
+    assert again.labels == ["round", "tape"] and len(again.get(image_id).boxes) == 12
 
 
 def test_rejects_non_images(tmp_path):

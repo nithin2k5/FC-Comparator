@@ -6,8 +6,11 @@ Acceptance criteria covered:
 * boards shifted by ~20 px are inspected correctly
 * the alert fires within 1 s of NG and every result is logged
 * a new part number is set up from a good board (numerous parts workflow)
+* a part without an active model / master is never inspected
 """
 
+import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -15,11 +18,12 @@ import yaml
 
 from fc_comparator.cli import main as cli_main
 from fc_comparator.config import load_config, save_config
-from fc_comparator.core.models import Box, PartNumber
-from fc_comparator.station import Inspector, Station, StationLocked
+from fc_comparator.core.models import Box
+from fc_comparator.station import Station, StationLocked
 from fc_comparator.station.alerts import AlertController, ConsoleAlert, Outputs
 from fc_comparator.vision.camera import FileSource, read_image, write_image
-from fc_comparator.vision.dataset import AnnotationStore
+from fc_comparator.vision.detect import create_detector
+from fc_comparator.vision.parts import PartRepository
 from fc_comparator.vision.synthetic import Geometry, render_marked_board
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,10 +34,11 @@ P001 = ["round", "fork_left", "small", "round"]
 
 
 def tmp_config(tmp_path: Path):
-    """The sample config, saved into tmp with absolute paths (safe to modify)."""
+    """The sample config and parts, copied into tmp with absolute paths (safe to modify)."""
     cfg = load_config(CONFIG)
-    for obj, attr in ((cfg.dataset, "dir"), (cfg.camera, "file_path"), (cfg.detector, "model_path"),
-                      (cfg.training, "workdir")):
+    shutil.copytree(cfg.resolve(cfg.storage.parts_dir), tmp_path / "parts")
+    cfg.storage.parts_dir = str(tmp_path / "parts")
+    for obj, attr in ((cfg.camera, "file_path"), (cfg.training, "workdir")):
         setattr(obj, attr, str(cfg.resolve(getattr(obj, attr))))
     cfg.storage.database = str(tmp_path / "inspections.db")
     cfg.storage.image_dir = str(tmp_path / "images")
@@ -43,16 +48,25 @@ def tmp_config(tmp_path: Path):
 
 
 @pytest.fixture(scope="module")
-def inspector():
-    return Inspector.from_config(load_config(CONFIG))
+def shared_factory():
+    """Each sample part's template detector, built once for the module (building takes seconds)."""
+    cfg = load_config(CONFIG)
+    repo = PartRepository(cfg.resolve(cfg.storage.parts_dir))
+    cache = {}
+
+    def factory(_cfg, part):
+        if part.code not in cache:
+            cache[part.code] = create_detector(cfg, repo.get(part.code))
+        return cache[part.code]
+
+    return factory
 
 
 @pytest.fixture
-def station(tmp_path, inspector):
+def station(tmp_path, shared_factory):
     cfg = tmp_config(tmp_path)
     backend = ConsoleAlert()
-    st = Station(cfg, source=FileSource(), inspector=Inspector(cfg, inspector.detector),
-                 alert=AlertController(backend, cfg.alert))
+    st = Station(cfg, source=FileSource(), alert=AlertController(backend, cfg.alert), detector_factory=shared_factory)
     st.backend = backend
     st.open()
     yield st
@@ -71,7 +85,7 @@ def test_sample_boards(station, case):
         assert sorted([p.cable, p.row] for p in rep.mismatches) == sorted(case["expected_ng"]), (case["note"], rep.mismatches)
         assert len(rep.extras) == case["extras"], case["note"]
         assert rep.ok == (not case["expected_ng"] and not case["extras"])
-        part = station.cfg.parts[case["part"]]
+        part = station.parts.get(case["part"]).master
         assert len(rep.positions) == part.cables * part.rows
     for p in rep.mismatches:  # every finding carries the full detail
         assert p.expected and p.found and 0.0 <= p.confidence <= 1.0 and p.reason
@@ -109,20 +123,24 @@ def test_missing_and_uncertain_are_never_ok(station):
         def detect(self, _img):
             return [Box(b.label, b.x, b.y, b.w, b.h, 0.45) for b in boxes]
 
-    station.inspector = Inspector(station.cfg, Unsure())
+    station.detector_factory = lambda _cfg, _part: Unsure()
+    station.reload()
     rep = station.inspect("P001", image=img).report
     assert not rep.ok and all(p.found == "uncertain" and not p.ok for p in rep.positions)
     assert rep.positions[0].reason == "low confidence (looks like round 45%)"
 
 
-def test_part_without_master_layout_uses_grid(station):
+def test_part_that_is_not_set_up_is_never_inspected(station):
     station.lock.enabled = False
-    station.cfg.parts["PX"] = PartNumber("PX", [[p] * 4 for p in P001])  # typed pattern, no master image
-    rep = station.inspect("PX", image=read_image(SAMPLES / "boards" / "board_P001_missing.jpg")).report
-    assert not rep.error and sorted(p.key for p in rep.mismatches) == [(2, 3)]
-    assert "grid" in rep.placement.message
-    rep = station.inspect("PX", image=read_image(SAMPLES / "boards" / "board_P003_ok.jpg")).report
-    assert rep.error and "cable column" in rep.error  # 3 cables found, 4 expected
+    station.parts.create("PX", "no model, no master")
+    assert station.setup_problems("PX") == ["no labelled images", "no master"]
+    img = read_image(SAMPLES / "boards" / "board_P001_ok.jpg")
+    rep = station.inspect("PX", image=img).report
+    assert not rep.ok and "not set up" in rep.error and rep.positions == []
+    station.cfg.detector.backend = "yolo"  # the station's real mode: P001 has no trained model
+    assert station.setup_problems("P001") == ["no active model"]
+    rep = station.inspect("P001", image=img).report
+    assert not rep.ok and "no active model" in rep.error
 
 
 def test_unknown_part_is_ng(station):
@@ -144,7 +162,9 @@ def test_ng_locks_station_until_pass_or_supervisor(station):
     assert not station.lock.locked
     station.inspect("P001", image=ng_img)
     assert not station.acknowledge("9999", "SUP1") and station.acknowledge("1234", "SUP1")
-    assert [e["kind"] for e in station.store.events()] == ["unlock_pass", "ack_failed", "ack"]
+    events = station.store.events()
+    assert [e["kind"] for e in events] == ["unlock_pass", "ack_failed", "ack"]
+    assert all(e["part_number"] == "P001" for e in events)
 
 
 def test_logging_and_evidence_images(station):
@@ -162,32 +182,73 @@ def test_logging_and_evidence_images(station):
     assert station.store.daily_report().ng == 2
 
 
-def test_new_part_from_marked_image_via_cli(tmp_path, capsys):
-    """Numerous parts: add a good board of a new layout, mark it, make it a part's master, inspect."""
-    cfg = tmp_config(tmp_path)
+@pytest.fixture
+def login(monkeypatch):
+    monkeypatch.setenv("FCC_USER", "nice")
+    monkeypatch.setenv("FCC_PASSWORD", "nice1234")
+
+
+def station_events(tmp_path):
+    from fc_comparator.station.storage import InspectionStore
+
+    return InspectionStore(tmp_path / "inspections.db").events()
+
+
+def test_new_part_via_cli(tmp_path, capsys, login):
+    """A new part number: add images, label them, set the master from a good board, inspect."""
+    tmp_config(tmp_path)
     cfg_path = str(tmp_path / "config.yaml")
     geo = Geometry(cable_x0=300, cable_dx=220, row_y0=280, row_dy=200)
     pattern = ["fork_right", "small", "round"]
     img, boxes = render_marked_board([pattern] * 5, seed=5, geometry=geo)
     photo = write_image(tmp_path / "upload" / "p004_good.jpg", img)
 
-    assert cli_main(["-c", cfg_path, "add-images", str(photo.parent), "--part", "P004", "--good"]) == 0
-    store = AnnotationStore(cfg.resolve(cfg.dataset.dir))
-    image_id = next(r.id for r in store.records() if r.source_name == "p004_good.jpg")
-    store.set_boxes(image_id, boxes)  # what the operator does on the Training tab
-    try:
-        assert cli_main(["-c", cfg_path, "add-part", "--image-id", image_id, "--part", "P004"]) == 0
-        saved = load_config(cfg_path).parts["P004"]
-        assert (saved.cables, saved.rows, saved.pattern) == (5, 3, [[p] * 5 for p in pattern])
+    assert cli_main(["-c", cfg_path, "add-images", "--part", "P004", "--description", "Harness D",
+                     str(photo.parent)]) == 0
+    part = PartRepository(tmp_path / "parts").get("P004")
+    assert part.description == "Harness D" and len(part.store) == 1
+    image_id = part.store.records()[0].id
+    part.store.set_boxes(image_id, boxes)  # what the operator does in Model Setup
+    assert cli_main(["-c", cfg_path, "label", "--part", "P004", "--rename", "small", "tiny"]) == 0
+    assert cli_main(["-c", cfg_path, "set-master", "--part", "P004", "--image-id", image_id]) == 0
+    master = PartRepository(tmp_path / "parts").get("P004").master
+    assert (master.cables, master.rows) == (5, 3)
+    assert master.pattern == [[p] * 5 for p in ["fork_right", "tiny", "round"]]
 
-        test_board = write_image(tmp_path / "p004_test.jpg",
-                                 render_marked_board([pattern, pattern, ["fork_right", "missing", "round"], pattern, pattern],
-                                                     seed=6, geometry=geo, shift=(15, -10))[0])
-        rc = cli_main(["-c", cfg_path, "inspect", "--image", str(test_board), "--part", "P004", "--no-store"])
-        out = capsys.readouterr().out
-        assert rc == 1 and "NG cable 3 row 2: expected small, found missing" in out
-    finally:
-        store.delete(image_id)  # keep the shared sample store unchanged
+    test_board = write_image(tmp_path / "p004_test.jpg",
+                             render_marked_board([pattern, pattern, ["fork_right", "missing", "round"], pattern, pattern],
+                                                 seed=6, geometry=geo, shift=(15, -10))[0])
+    rc = cli_main(["-c", cfg_path, "inspect", "--image", str(test_board), "--part", "P004", "--no-store"])
+    out = capsys.readouterr().out
+    assert rc == 1 and "NG cable 3 row 2: expected tiny, found missing" in out
+    kinds = [(e["kind"], e["part_number"]) for e in station_events(tmp_path)]
+    assert kinds == [("part_created", "P004"), ("labels_changed", "P004"), ("master_saved", "P004")]
+
+
+def test_cli_model_commands_need_the_login(tmp_path, monkeypatch, capsys):
+    tmp_config(tmp_path)
+    monkeypatch.setenv("FCC_USER", "nice")
+    monkeypatch.setenv("FCC_PASSWORD", "wrong")
+    assert cli_main(["-c", str(tmp_path / "config.yaml"), "use-model", "--part", "P001"]) == 3
+    assert "Wrong user name or password" in capsys.readouterr().err
+
+
+def test_cli_use_model_and_rollback(tmp_path, capsys, login):
+    tmp_config(tmp_path)
+    cfg_path = str(tmp_path / "config.yaml")
+    part = PartRepository(tmp_path / "parts").get("P001")
+    part.models_dir.mkdir()
+    for version, acc in (("v001", 0.97), ("v002", 0.99), ("v003", 0.6)):
+        (part.models_dir / f"{version}.pt").write_bytes(b"w")
+        (part.models_dir / f"{version}.json").write_text(json.dumps({"accuracy": acc}), encoding="utf-8")
+    assert cli_main(["-c", cfg_path, "use-model", "--part", "P001"]) == 2  # newest is v003: below 95 %
+    assert "below the 95% needed" in capsys.readouterr().err
+    assert cli_main(["-c", cfg_path, "use-model", "--part", "P001", "--version", "v002"]) == 0
+    assert cli_main(["-c", cfg_path, "use-model", "--part", "P001", "--version", "v001"]) == 0
+    assert PartRepository(tmp_path / "parts").get("P001").active_model == "v001"
+    events = station_events(tmp_path)
+    assert [(e["kind"], e["detail"]) for e in events] == [("model_activated", "- -> v002"),
+                                                          ("model_rollback", "v002 -> v001")]
 
 
 def test_cli_inspect_exit_codes(tmp_path, capsys):

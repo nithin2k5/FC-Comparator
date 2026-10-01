@@ -1,40 +1,33 @@
 """Core data model shared by every module.
 
-Clip types (taxonomy)
----------------------
-The detector classes are configurable (``Taxonomy.classes``) because new part
-numbers can bring new clip types. Defaults are the clips on the FCC boards:
-``round``, ``small`` and three fork brackets - black ``fork``, ``grey_fork`` and
-``metal_fork`` - each with the side its open end faces (``_left`` / ``_right``).
+Labels
+------
+Every part number has its own label set, created by the person who labels its
+images (``red_clip``, ``fork_left``, ``tape`` ...). A label whose name contains
+the word ``left`` or ``right`` has a mirror twin (``fork_left`` <-> ``fork_right``):
+training adds mirrored images with those labels swapped, and a twin found where
+the master expects the other is reported as *wrong orientation*.
 
-* **groups** - an expected label that accepts several detected classes, e.g.
-  ``fork`` accepts ``fork_left`` and ``fork_right`` (orientation not checked).
-* **mirror** - classes that are horizontal mirror images of each other; used to
-  augment training data and templates (a marked ``fork_left`` also teaches
-  ``fork_right``).
-
-Two labels are reserved and never OK: ``missing`` (no clip where the master has
-one) and ``uncertain`` (a clip was found but its confidence is below the
+Two labels are reserved and never OK: ``missing`` (nothing where the master has
+an object) and ``uncertain`` (an object was found but its confidence is below the
 threshold).
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
-ROUND = "round"
-FORK = "fork"
-FORK_LEFT = "fork_left"
-FORK_RIGHT = "fork_right"
-SMALL = "small"
-FORK_KINDS = ("fork", "grey_fork", "metal_fork")
 MISSING = "missing"
 UNCERTAIN = "uncertain"
 
 NEVER_OK_LABELS = frozenset({MISSING, UNCERTAIN})
 RESERVED_LABELS = NEVER_OK_LABELS
+
+_SIDE = re.compile(r"(?<![A-Za-z])(left|right|LEFT|RIGHT|Left|Right)(?![a-z])")
+_LABEL_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 class Verdict(str, Enum):
@@ -42,84 +35,52 @@ class Verdict(str, Enum):
     NG = "NG"
 
 
+def mirror_name(label: str) -> str:
+    """``fork_left`` -> ``fork_right`` (and back); labels without left/right are their own mirror."""
+    swap = {"left": "right", "right": "left", "LEFT": "RIGHT", "RIGHT": "LEFT", "Left": "Right", "Right": "Left"}
+    return _SIDE.sub(lambda m: swap[m.group(1)], label)
+
+
+def has_side(label: str) -> bool:
+    return mirror_name(label) != label
+
+
+def check_label(name: str) -> str:
+    """Return the cleaned label name or raise ValueError."""
+    name = name.strip()
+    if not _LABEL_OK.match(name):
+        raise ValueError(f"Invalid label {name!r}: use letters, digits, _ and - (no spaces)")
+    if name.lower() in RESERVED_LABELS:
+        raise ValueError(f"'{name}' is reserved")
+    return name
+
+
 # ---------------------------------------------------------------------------
-# Taxonomy
+# Taxonomy: a part's labels plus their mirror twins
 # ---------------------------------------------------------------------------
 @dataclass
 class Taxonomy:
-    classes: list[str] = field(
-        default_factory=lambda: [ROUND, SMALL] + [f"{k}_{side}" for k in FORK_KINDS for side in ("left", "right")])
-    groups: dict[str, list[str]] = field(
-        default_factory=lambda: {k: [f"{k}_left", f"{k}_right"] for k in FORK_KINDS})
-    mirror: dict[str, str] = field(
-        default_factory=lambda: {f"{k}_{a}": f"{k}_{b}" for k in FORK_KINDS for a, b in (("left", "right"), ("right", "left"))})
+    classes: list[str] = field(default_factory=list)
+    mirror: dict[str, str] = field(default_factory=dict)
 
-    def expected_labels(self) -> list[str]:
-        """Labels allowed in a master pattern: every class plus every group name."""
-        return list(self.classes) + [g for g in self.groups if g not in self.classes]
+    @classmethod
+    def from_labels(cls, labels: list[str]) -> "Taxonomy":
+        """The labels, followed by any mirror twin that is not a label itself (learnt from mirrored images)."""
+        classes = list(dict.fromkeys(labels))
+        for lbl in list(classes):
+            twin = mirror_name(lbl)
+            if twin != lbl and twin not in classes:
+                classes.append(twin)
+        return cls(classes, {c: mirror_name(c) for c in classes if has_side(c)})
 
     def matches(self, expected: str, found: str) -> bool:
         """True when a detected ``found`` satisfies the master's ``expected``."""
         if found in NEVER_OK_LABELS or expected in NEVER_OK_LABELS:
             return False
-        if expected in self.groups:
-            return found == expected or found in self.groups[expected]
         return expected == found
-
-    def group_of(self, label: str) -> str:
-        for name, members in self.groups.items():
-            if label in members:
-                return name
-        return label
 
     def mirror_of(self, label: str) -> str:
         return self.mirror.get(label, label)
-
-    def validate(self) -> list[str]:
-        problems = []
-        if not self.classes:
-            problems.append("taxonomy.classes is empty")
-        if len(set(self.classes)) != len(self.classes):
-            problems.append("taxonomy.classes contains duplicates")
-        for name in self.classes:
-            if name in RESERVED_LABELS:
-                problems.append(f"'{name}' is reserved and cannot be a clip class")
-            if not name or not name.replace("_", "").replace("-", "").isalnum():
-                problems.append(f"invalid class name {name!r} (letters, digits, _ and - only)")
-        for g, members in self.groups.items():
-            unknown = [m for m in members if m not in self.classes]
-            if unknown:
-                problems.append(f"group '{g}' refers to unknown classes {unknown}")
-        for a, b in self.mirror.items():
-            if a not in self.classes or b not in self.classes:
-                problems.append(f"mirror pair {a} <-> {b} uses unknown classes")
-            elif self.mirror.get(b) != a:
-                problems.append(f"mirror pair {a} -> {b} is not symmetric")
-        return problems
-
-    def to_dict(self) -> dict:
-        return {"classes": list(self.classes), "groups": {k: list(v) for k, v in self.groups.items()},
-                "mirror": dict(self.mirror)}
-
-    @classmethod
-    def from_dict(cls, d: dict | None) -> "Taxonomy":
-        if not d:
-            return cls()
-        t = cls()
-        if "classes" in d:
-            t.classes = [str(c) for c in d["classes"]]
-        if "groups" in d:
-            t.groups = {str(k): [str(x) for x in v] for k, v in (d["groups"] or {}).items()}
-        if "mirror" in d:
-            t.mirror = {str(k): str(v) for k, v in (d["mirror"] or {}).items()}
-        return t
-
-
-DEFAULT_TAXONOMY = Taxonomy()
-
-
-def label_matches(expected: str, found: str, taxonomy: Taxonomy = DEFAULT_TAXONOMY) -> bool:
-    return taxonomy.matches(expected, found)
 
 
 # ---------------------------------------------------------------------------
@@ -202,17 +163,17 @@ class Layout:
 
 @dataclass
 class PartNumber:
-    """A part number: the clip expected at every position of the board.
+    """A part's master: the label expected at every position of a known-good board.
 
-    ``pattern[row - 1][cable - 1]`` is the expected label (a clip class or a group
-    name such as ``fork``); rows run top to bottom, cables left to right.
+    ``pattern[row - 1][cable - 1]`` is the expected label; rows run top to bottom,
+    cables left to right. ``layout`` says where each position sits in the master photo.
     """
 
     code: str
     pattern: list[list[str]]
     description: str = ""
     layout: Layout | None = None
-    master_image: str = ""  # data-set image id the master was created from
+    master_image: str = ""  # id of the master photo among the part's images
 
     @property
     def rows(self) -> int:
@@ -225,24 +186,27 @@ class PartNumber:
     def expected(self, cable: int, row: int) -> str:
         return self.pattern[row - 1][cable - 1]
 
-    def validate(self, taxonomy: Taxonomy = DEFAULT_TAXONOMY) -> None:
+    def labels(self) -> set[str]:
+        return {p for row in self.pattern for p in row}
+
+    def validate(self, taxonomy: Taxonomy | None = None) -> None:
         if not self.code or not self.code.strip():
             raise ValueError("Part number code must not be empty")
         if not self.pattern or not self.pattern[0]:
             raise ValueError(f"{self.code}: pattern is empty")
         if any(len(row) != self.cables for row in self.pattern):
-            raise ValueError(f"{self.code}: every row must list one clip per cable ({self.cables})")
-        allowed = taxonomy.expected_labels()
-        bad = sorted({p for row in self.pattern for p in row if p not in allowed})
-        if bad:
-            raise ValueError(f"{self.code}: invalid pattern labels {bad}; allowed: {allowed}")
+            raise ValueError(f"{self.code}: every row must list one object per cable ({self.cables})")
+        if taxonomy is not None:
+            bad = sorted(self.labels() - set(taxonomy.classes))
+            if bad:
+                raise ValueError(f"{self.code}: master uses unknown labels {bad}")
         if self.layout is not None and (self.layout.rows != self.rows or self.layout.cables != self.cables):
             raise ValueError(
                 f"{self.code}: layout is {self.layout.cables}x{self.layout.rows} but part is {self.cables}x{self.rows}"
             )
 
     def to_dict(self) -> dict:
-        d: dict = {"description": self.description, "pattern": [list(row) for row in self.pattern]}
+        d: dict = {"pattern": [list(row) for row in self.pattern]}
         if self.master_image:
             d["master_image"] = self.master_image
         if self.layout is not None:
@@ -250,17 +214,12 @@ class PartNumber:
         return d
 
     @classmethod
-    def from_dict(cls, code: str, d: dict | list) -> "PartNumber":
-        if isinstance(d, list):  # shorthand: P001: [[round, round], [fork, fork]]
-            d = {"pattern": d}
+    def from_dict(cls, code: str, d: dict, description: str = "") -> "PartNumber":
         d = d or {}
-        raw = d.get("pattern", [])
-        if raw and all(isinstance(p, str) for p in raw):  # one label per row, the same on every cable
-            raw = [[p] * int(d.get("cables", 4)) for p in raw]
         return cls(
             code=str(code),
-            pattern=[[str(p) for p in row] for row in raw],
-            description=str(d.get("description", "") or ""),
+            pattern=[[str(p) for p in row] for row in d.get("pattern", [])],
+            description=description,
             layout=Layout.from_dict(d["layout"]) if d.get("layout") else None,
             master_image=str(d.get("master_image", "") or ""),
         )

@@ -1,4 +1,4 @@
-"""Start the station UI: login screen, then the main window."""
+"""Start the station UI: straight into the main window (Inspect tab), no login."""
 
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ def run(config_path: str) -> int:
     from ..config import load_config
     from ..station import Station
     from . import style
-    from .login import LoginPage
     from .main_window import MainWindow
     from .widgets import center_window
 
@@ -37,26 +36,8 @@ def run(config_path: str) -> int:
     style.apply(root)
     station = Station(cfg)
     station.open()
-    win: MainWindow | None = None
-
-    def login(user: str) -> None:
-        nonlocal win
-        login_page.pack_forget()
-        win = MainWindow(root, station, user=user, on_logout=logout)
-        win.pack(fill="both", expand=True)
-
-    def logout() -> None:
-        nonlocal win
-        if win is not None:
-            win.shutdown()
-            win.destroy()
-            win = None
-        login_page.reset()
-        login_page.pack(fill="both", expand=True)
-
-    login_page = LoginPage(root, cfg, login, station.store.log_event)
-    login_page.pack(fill="both", expand=True)
-    login_page.reset()
+    win = MainWindow(root, station)
+    win.pack(fill="both", expand=True)
 
     if cfg.ui.fullscreen:
         root.attributes("-fullscreen", True)
@@ -67,8 +48,7 @@ def run(config_path: str) -> int:
             center_window(root, None, 1400, 900)
 
     def on_close() -> None:
-        if win is not None:
-            win.shutdown()
+        win.shutdown()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)

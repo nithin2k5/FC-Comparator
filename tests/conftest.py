@@ -1,10 +1,12 @@
 import numpy as np
 import pytest
 
+from fc_comparator.core.models import Taxonomy
 from fc_comparator.vision.dataset import AnnotationStore
 from fc_comparator.vision.synthetic import render_marked_board
 
 CLIP_LABELS = ["round", "fork_left", "fork_right", "small", "missing"]
+TAX = Taxonomy.from_labels(["round", "fork_left", "fork_right", "small"])
 
 
 def random_columns(rng: np.random.Generator, labels=CLIP_LABELS, cables=4, rows=4) -> list[list[str]]:

@@ -3,10 +3,11 @@
     python scripts/make_test_fixtures.py
 
 Outputs
-  tests/fixtures/annotations/     marked images (masters of P001-P003 and mixed boards)
+  tests/fixtures/parts/<code>/    parts P001-P003: labelled images (the part's master + mixed boards)
+                                  and the master (pattern + layout) made from the master image
   tests/fixtures/boards/*.jpg     test boards (not used for learning)
   tests/fixtures/manifest.yaml    part number and expected result per test board
-  tests/fixtures/config.yaml      parts P001-P003 with pattern + layout created from their master images
+  tests/fixtures/config.yaml      the station settings the tests use (template matching, no trained model)
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ sys.path.insert(0, str(ROOT))
 from fc_comparator.config import load_config, save_config  # noqa: E402
 from fc_comparator.core.parts import part_from_boxes  # noqa: E402
 from fc_comparator.vision.camera import write_image  # noqa: E402
-from fc_comparator.vision.dataset import AnnotationStore  # noqa: E402
+from fc_comparator.vision.parts import PartRepository  # noqa: E402
 from fc_comparator.vision.synthetic import (  # noqa: E402
     DEFAULT_GEOMETRY,
     Geometry,
@@ -85,35 +86,35 @@ def main() -> None:
     ap.add_argument("--config", type=Path, default=ROOT / "tests" / "fixtures" / "config.yaml")
     args = ap.parse_args()
     out: Path = args.out
-    for sub in ("boards", "annotations", "dataset"):
+    for sub in ("boards", "annotations", "dataset", "parts"):
         shutil.rmtree(out / sub, ignore_errors=True)
     for old in ("reference.jpg", "manifest.yaml"):
         (out / old).unlink(missing_ok=True)
 
-    # 1. "upload and mark" images: one good master board per part + mixed boards
-    store = AnnotationStore(out / "annotations")
-    masters = {}
-    for i, (code, (_desc, pattern, cables, geo)) in enumerate(PARTS.items()):
-        img, boxes = render_marked_board(cols(pattern, cables), seed=10 + i, geometry=geo)
-        image_id, _ = store.add_image(img, part=code, good=True, name=f"{code}_master.jpg")
-        store.set_boxes(image_id, boxes)
-        masters[code] = image_id
+    # 1. mixed boards every part learns from (all labels, both layouts)
     rng = np.random.default_rng(7)
     labels = ["round", "fork_left", "fork_right", "small", "missing"]
+    mixed = []
     for i in range(6):
         geo = GEO3 if i == 5 else DEFAULT_GEOMETRY
         n_cables, n_rows = (3, 5) if geo is GEO3 else (4, 4)
         mix = [[str(rng.choice(labels)) for _ in range(n_rows)] for _ in range(n_cables)]
-        img, boxes = render_marked_board(mix, seed=40 + i, geometry=geo, shift=tuple(rng.uniform(-15, 15, 2)))
-        image_id, _ = store.add_image(img, name=f"mixed_{i + 1}.jpg")
-        store.set_boxes(image_id, boxes)
+        mixed.append((f"mixed_{i + 1}.jpg", *render_marked_board(mix, seed=40 + i, geometry=geo,
+                                                                 shift=tuple(rng.uniform(-15, 15, 2)))))
 
-    # 2. part numbers from the marked master images
+    # 2. per part: the master board + the mixed boards, labelled; the master from the master image
     cfg = load_config(args.config)
-    cfg.parts = {}
-    for code, (desc, *_rest) in PARTS.items():
-        rec = store.get(masters[code])
-        cfg.parts[code] = part_from_boxes(code, rec.boxes, (rec.width, rec.height), cfg.taxonomy, desc, rec.id)
+    repo = PartRepository(cfg.resolve(cfg.storage.parts_dir))
+    for i, (code, (desc, pattern, cables, geo)) in enumerate(PARTS.items()):
+        part = repo.create(code, desc)
+        img, boxes = render_marked_board(cols(pattern, cables), seed=10 + i, geometry=geo)
+        master_id, _ = part.store.add_image(img, good=True, name=f"{code}_master.jpg")
+        part.store.set_boxes(master_id, boxes)
+        for name, mimg, mboxes in mixed:
+            image_id, _ = part.store.add_image(mimg, name=name)
+            part.store.set_boxes(image_id, mboxes)
+        rec = part.store.get(master_id)
+        part.set_master(part_from_boxes(code, rec.boxes, (rec.width, rec.height), part.taxonomy(), desc, rec.id))
     save_config(cfg)
 
     # 3. test boards + manifest
@@ -133,7 +134,7 @@ def main() -> None:
     (out / "manifest.yaml").write_text(
         "# Expected results for the sample boards (used by tests/test_e2e.py)\n"
         + yaml.safe_dump(manifest, sort_keys=False, default_flow_style=None), encoding="utf-8")
-    print(f"Wrote {len(store)} marked images, {len(manifest)} test boards; parts {list(cfg.parts)} saved to {cfg.path}")
+    print(f"Wrote parts {repo.codes()} to {repo.root} and {len(manifest)} test boards")
 
 
 if __name__ == "__main__":

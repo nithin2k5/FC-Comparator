@@ -1,8 +1,8 @@
-"""Annotation store: uploaded board images and the clip boxes marked on them.
+"""Annotation store: one part's images, the boxes labelled on them and its label set.
 
 Layout on disk::
 
-    <root>/index.json          metadata + boxes for every image
+    <root>/index.json          label names + metadata and boxes for every image
     <root>/images/<id>.jpg     the uploaded images (copied in, never modified)
 
 One JSON index keeps the whole data set consistent (it is written atomically),
@@ -26,7 +26,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from ..core.models import Box
+from ..core.models import Box, check_label
 from .camera import IMAGE_EXTENSIONS, read_image, write_image
 
 INDEX = "index.json"
@@ -71,6 +71,7 @@ class AnnotationStore:
         self.root = Path(root)
         self._lock = threading.RLock()
         self._records: dict[str, ImageRecord] = {}
+        self._labels: list[str] = []
         self.reload()
 
     # -- persistence -----------------------------------------------------------
@@ -78,14 +79,18 @@ class AnnotationStore:
         with self._lock:
             path = self.root / INDEX
             self._records = {}
+            self._labels = []
             if path.is_file():
                 data = json.loads(path.read_text(encoding="utf-8"))
                 for image_id, d in data.get("images", {}).items():
                     self._records[image_id] = ImageRecord.from_dict(image_id, d)
+                self._labels = [str(x) for x in data.get("labels", [])]
+            used = [b.label for r in self._records.values() for b in r.boxes]
+            self._labels = list(dict.fromkeys(self._labels + used))
 
     def _save(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        payload = {"version": 1, "images": {i: r.to_dict() for i, r in self._records.items()}}
+        payload = {"version": 2, "labels": list(self._labels), "images": {i: r.to_dict() for i, r in self._records.items()}}
         fd, tmp = tempfile.mkstemp(prefix=".index-", suffix=".json", dir=self.root)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -117,15 +122,25 @@ class AnnotationStore:
     def load_image(self, image_id: str) -> np.ndarray:
         return read_image(self.image_path(image_id))
 
+    @property
+    def labels(self) -> list[str]:
+        """The part's label names, in the order they were created."""
+        with self._lock:
+            return list(self._labels)
+
+    def label_counts(self) -> dict[str, int]:
+        counts = Counter(b.label for r in self.records() for b in r.boxes)
+        return {lbl: counts.get(lbl, 0) for lbl in self.labels}
+
     def stats(self) -> dict:
         recs = self.records()
-        counts = Counter(b.label for r in recs for b in r.boxes)
+        counts = self.label_counts()
         return {
             "images": len(recs),
             "marked": sum(r.marked for r in recs),
             "good": sum(r.good for r in recs),
             "boxes": sum(counts.values()),
-            "per_class": dict(sorted(counts.items())),
+            "per_class": counts,
         }
 
     def boxes_by_class(self) -> dict[str, list[tuple[str, Box]]]:
@@ -186,6 +201,9 @@ class AnnotationStore:
         with self._lock:
             rec = self._records[image_id]
             rec.boxes = [self._clip(b, rec) for b in boxes if b.w >= 2 and b.h >= 2]
+            for b in rec.boxes:
+                if b.label not in self._labels:
+                    self._labels.append(check_label(b.label))
             self._save()
 
     def update(self, image_id: str, *, part: str | None = None, good: bool | None = None, note: str | None = None) -> None:
@@ -205,17 +223,46 @@ class AnnotationStore:
             self._save()
             (self.root / rec.file).unlink(missing_ok=True)
 
+    # -- labels ------------------------------------------------------------------
+    def add_label(self, name: str) -> str:
+        name = check_label(name)
+        with self._lock:
+            if name not in self._labels:
+                self._labels.append(name)
+                self._save()
+        return name
+
     def rename_label(self, old: str, new: str) -> int:
-        """Rename a clip class in every box (after a taxonomy change). Returns boxes changed."""
+        """Rename ``old`` on every image; if ``new`` exists already the two are merged. Returns boxes changed."""
+        new = check_label(new)
         n = 0
         with self._lock:
+            if old not in self._labels:
+                raise KeyError(f"No label {old!r}")
             for rec in self._records.values():
                 for b in rec.boxes:
                     if b.label == old:
                         b.label = new
                         n += 1
-            if n:
-                self._save()
+            i = self._labels.index(old)
+            if new in self._labels:
+                self._labels.pop(i)
+            else:
+                self._labels[i] = new
+            self._save()
+        return n
+
+    def delete_label(self, name: str) -> int:
+        """Remove the label and every box carrying it. Returns boxes removed."""
+        n = 0
+        with self._lock:
+            for rec in self._records.values():
+                keep = [b for b in rec.boxes if b.label != name]
+                n += len(rec.boxes) - len(keep)
+                rec.boxes = keep
+            if name in self._labels:
+                self._labels.remove(name)
+            self._save()
         return n
 
     @staticmethod

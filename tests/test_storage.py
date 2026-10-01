@@ -97,7 +97,22 @@ def test_migrates_v1_database(tmp_path):
     assert old["detector"] == "template" and old["placement_ok"] == 1 and old["extras_count"] == 0
     store.save_report(report(16, [], datetime(2026, 9, 28, 9, 0)))
     assert len(store.inspections()) == 2
+    store.log_event("model_activated", "nice", "- -> v001", part_number="P001")  # events got a part column
+    assert store.events()[-1]["part_number"] == "P001"
     store.close()
+
+
+def test_daily_report_lists_model_changes(store):
+    store.log_event("model_trained", "nice", "v002: 97.0%", part_number="P001")
+    store.log_event("model_rollback", "nice", "v002 -> v001", part_number="P001")
+    store.log_event("master_saved", "nice", "4 cables x 4 rows", part_number="P002")
+    store.log_event("ack", "SUP", "acknowledged NG")
+    rep = store.daily_report(date.today())
+    assert [(k, p) for _ts, k, p, _d in rep.model_changes] == [
+        ("model_trained", "P001"), ("model_rollback", "P001"), ("master_saved", "P002")]
+    assert rep.acknowledgements == 1
+    text = rep.as_text()
+    assert "Model changes:" in text and "model rollback  v002 -> v001" in text
 
 
 def test_daily_report(store):

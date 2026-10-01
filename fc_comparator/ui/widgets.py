@@ -296,3 +296,54 @@ class InputDialog(tk.Toplevel):
 
 def ask_string(parent, title: str, prompt: str, initial: str = "", secret: bool = False) -> str | None:
     return InputDialog(parent, title, prompt, initial, secret).run()
+
+
+class LoginDialog(tk.Toplevel):
+    """User name + password, modal and centred on the application window."""
+
+    def __init__(self, parent, title: str = "Model login", note: str = ""):
+        super().__init__(parent)
+        self.withdraw()
+        self.title(title)
+        self.resizable(False, False)
+        self.configure(bg=style.BG)
+        self.transient(parent.winfo_toplevel())
+        self.result: tuple[str, str] | None = None
+        body = ttk.Frame(self, padding=20)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text=title, style="Title.TLabel").pack(anchor="w")
+        if note:
+            ttk.Label(body, text=note, style="Muted.TLabel", wraplength=320, justify="left").pack(anchor="w", pady=(2, 0))
+        ttk.Label(body, text="User").pack(anchor="w", pady=(12, 0))
+        self.user = ttk.Entry(body, width=30, font=style.font(12))
+        self.user.pack(fill="x", pady=(2, 8))
+        ttk.Label(body, text="Password").pack(anchor="w")
+        self.password = ttk.Entry(body, width=30, font=style.font(12), show="•")
+        self.password.pack(fill="x", pady=(2, 14))
+        row = ttk.Frame(body)
+        row.pack(fill="x")
+        ttk.Button(row, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(row, text="Log in", style="Accent.TButton", command=self._ok).pack(side="right", padx=6)
+        self.user.bind("<Return>", lambda _e: self.password.focus_set())
+        self.password.bind("<Return>", lambda _e: self._ok())
+        self.bind("<Escape>", lambda _e: self.destroy())
+        center_window(self, parent)
+        self.deiconify()
+        self.user.focus_set()
+
+    def _ok(self) -> None:
+        self.result = (self.user.get().strip(), self.password.get())
+        self.destroy()
+
+    def run(self) -> tuple[str, str] | None:
+        try:
+            self.wait_visibility()
+            self.grab_set()
+        except tk.TclError:
+            pass
+        self.master.wait_window(self)
+        return self.result
+
+
+def ask_login(parent, title: str = "Model login", note: str = "") -> tuple[str, str] | None:
+    return LoginDialog(parent, title, note).run()

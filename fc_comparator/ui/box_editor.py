@@ -1,12 +1,12 @@
-"""Box editor: draw, select, move, resize and relabel clip boxes on an image (a tk.Canvas).
+"""Box editor: draw, select, move, resize and relabel object boxes on an image (a tk.Canvas).
 
 Mouse
-    left-drag on empty area   draw a new box with the current clip type
+    left-drag on empty area   draw a new box with the current label (asks for one if there is none)
     click a box               select it; drag to move, drag a handle to resize
     wheel                     zoom around the cursor
     right- or middle-drag     pan
 Keys (canvas focused)
-    1..9       clip type of the selected box / of new boxes
+    1..9       label of the selected box / of new boxes
     Delete     remove the selected box
     Ctrl+Z     undo
     arrows     nudge the selected box (Shift = 10 px); without a selection:
@@ -42,6 +42,7 @@ class AnnotationCanvas(tk.Canvas):
         on_change: Callable[[list[Box]], None] | None = None,
         on_select: Callable[[Box | None], None] | None = None,
         on_navigate: Callable[[int], None] | None = None,
+        on_need_label: Callable[[], str | None] | None = None,
     ):
         super().__init__(master, bg=style.CANVAS_BG, highlightthickness=0, cursor="crosshair", takefocus=1)
         self.classes = list(classes)
@@ -49,6 +50,7 @@ class AnnotationCanvas(tk.Canvas):
         self.on_change = on_change
         self.on_select = on_select
         self.on_navigate = on_navigate
+        self.on_need_label = on_need_label  # called when a box is drawn while no label is chosen
         self.readonly = False
         self.image: np.ndarray | None = None
         self.boxes: list[Box] = []
@@ -61,7 +63,7 @@ class AnnotationCanvas(tk.Canvas):
         self._drag: dict | None = None
         self._pan: tuple | None = None
         self._fitted = True  # keep the image fitted on resize until the user zooms or pans
-        self._placeholder = "Add images, then select one to mark its clips"
+        self._placeholder = "Add images, then select one to label its objects"
 
         self.bind("<Configure>", lambda _e: self.fit() if self._fitted else self.redraw())
         self.bind("<ButtonPress-1>", self._press)
@@ -237,7 +239,7 @@ class AnnotationCanvas(tk.Canvas):
                               "start": self.to_image(e.x, e.y), "snapshot": self._snapshot()}
             return
         self._select(None)
-        if not self.readonly and self.current_class:
+        if not self.readonly and (self.current_class or self.on_need_label):
             self._drag = {"mode": "draw", "start": self._clamp(*self.to_image(e.x, e.y)), "rubber": None}
 
     def _motion(self, e) -> None:
@@ -282,6 +284,12 @@ class AnnotationCanvas(tk.Canvas):
             (ax, ay), (bx, by) = d["start"], self._clamp(*self.to_image(e.x, e.y))
             w, h = abs(bx - ax), abs(by - ay)
             if w >= MIN_BOX and h >= MIN_BOX and w * self.scale >= 6 and h * self.scale >= 6:
+                if not self.current_class:
+                    label = self.on_need_label() if self.on_need_label else None
+                    if not label:
+                        self.redraw()
+                        return
+                    self.current_class = label
                 self._push_undo()
                 self.boxes.append(Box(self.current_class, min(ax, bx), min(ay, by), w, h))
                 # Not left selected: choosing the type for the *next* box must not relabel this one.

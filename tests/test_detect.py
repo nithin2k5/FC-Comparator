@@ -5,17 +5,19 @@ import numpy as np
 import pytest
 
 from fc_comparator.config import AppConfig, TemplateDetectorConfig
-from fc_comparator.core.models import Box, Taxonomy
+from fc_comparator.core.models import Box
 from fc_comparator.vision.dataset import AnnotationStore
 from fc_comparator.vision.detect import TemplateDetector, create_detector, nms
 from fc_comparator.vision.synthetic import render_marked_board
 
-from .conftest import random_columns
+from fc_comparator.vision.parts import PartRepository
+
+from .conftest import TAX, random_columns
 
 
 @pytest.fixture(scope="module")
 def detector(marked_store):
-    return TemplateDetector(TemplateDetectorConfig(), Taxonomy(), marked_store)
+    return TemplateDetector(TemplateDetectorConfig(), TAX, marked_store)
 
 
 def match(dets, gt, iou=0.5):
@@ -35,7 +37,7 @@ def match(dets, gt, iou=0.5):
 
 def test_learns_from_a_few_marked_images(detector):
     assert set(detector.labels) == {"round", "fork_left", "fork_right", "small"}
-    assert detector.negatives  # automatic "not a clip" patches
+    assert detector.negatives  # automatic "not an object" patches
 
 
 def test_detects_every_clip_on_unseen_boards(detector):
@@ -80,7 +82,7 @@ def test_speed(detector):
 
 
 def test_empty_store(tmp_path):
-    det = TemplateDetector(TemplateDetectorConfig(), Taxonomy(), AnnotationStore(tmp_path))
+    det = TemplateDetector(TemplateDetectorConfig(), TAX, AnnotationStore(tmp_path))
     assert not det.ready and det.detect(np.zeros((100, 100, 3), np.uint8)) == []
 
 
@@ -89,31 +91,19 @@ def test_nms_keeps_the_best_box():
     assert [b.confidence for b in nms(boxes)] == [0.9, 0.5]
 
 
-def test_auto_never_switches_to_an_undertrained_model(tmp_path, marked_store):
-    import json
-
+def test_factory_uses_the_parts_own_detector(tmp_path, marked_store):
     cfg = AppConfig(base_dir=tmp_path)
-    cfg.dataset.dir = str(marked_store.root)
-    model = tmp_path / "models" / "clip_detector.pt"
-    model.parent.mkdir()
-    model.write_bytes(b"not really a model")
-    report = model.with_name("clip_detector_report.json")
-    report.write_text(json.dumps({"accuracy": 0.42}))
-    det = create_detector(cfg, marked_store)
-    assert det.name == "template" and "42%" in det.note and "train longer" in det.note
-    report.write_text(json.dumps({"accuracy": 0.99}))  # good report but unreadable weights
-    det = create_detector(cfg, marked_store)
-    assert det.name == "template" and "could not be loaded" in det.note
-
-
-def test_factory_falls_back_to_templates(tmp_path, marked_store):
-    cfg = AppConfig(base_dir=tmp_path)
-    cfg.detector.model_path = "missing.pt"
-    cfg.dataset.dir = str(marked_store.root)
-    assert create_detector(cfg).name == "template"
-    cfg.detector.backend = "yolo"
-    with pytest.raises(FileNotFoundError):
-        create_detector(cfg)
+    part = PartRepository(tmp_path / "parts").create("P1")
+    with pytest.raises(RuntimeError, match="no active model"):
+        create_detector(cfg, part)  # yolo: needs a trained model in use
+    cfg.detector.backend = "template"
+    with pytest.raises(RuntimeError, match="no labelled images"):
+        create_detector(cfg, part)
+    for rec in marked_store.records():
+        image_id, _ = part.store.add_image(marked_store.image_path(rec.id))
+        part.store.set_boxes(image_id, rec.boxes)
+    det = create_detector(cfg, part)
+    assert det.name == "template" and set(det.labels) == set(TAX.classes)
     cfg.detector.backend = "bogus"
     with pytest.raises(ValueError):
-        create_detector(cfg)
+        create_detector(cfg, part)

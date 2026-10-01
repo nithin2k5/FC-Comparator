@@ -1,4 +1,8 @@
-"""Inspect: scan/choose the part number, press INSPECT (or the foot pedal), read OK / NG."""
+"""Inspect: scan/choose the part number, press INSPECT (or the foot pedal), read OK / NG.
+
+No login. A part number is inspected with its own active model and master; a part
+without them shows NOT SET UP and cannot be inspected.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +29,9 @@ class InspectPage(ttk.Frame):
         self._file_image = None  # an image file loaded for the next inspection (camera mode)
         self._showing_result = False
         self._last_annotated = None
+        self.problems: list[str] = ["no part selected"]  # why the selected part cannot be inspected
+        self._loading = ""  # part whose model is being loaded
+        self._selected = ""  # the part chosen last (restored after an operator badge scan)
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -81,24 +88,66 @@ class InspectPage(ttk.Frame):
     def part_code(self) -> str:
         return self.part.get().strip()
 
+    @property
+    def parts(self):
+        return self.station.parts
+
+    @property
+    def ready(self) -> bool:
+        return not self.problems
+
     def on_config_changed(self) -> None:
-        codes = sorted(self.cfg.parts)
-        self.part.configure(values=codes)
-        if self.part_code not in self.cfg.parts:
-            self.set_part(codes[0] if codes else "")
-        else:
-            self.set_part(self.part_code)
+        self.on_parts_changed()
         self._update_stats()
 
+    def on_parts_changed(self, code: str | None = None) -> None:
+        """Part numbers, models or masters changed in Model Setup: refresh, reload the current part."""
+        codes = self.parts.codes()
+        self.part.configure(values=codes)
+        current = self.part_code
+        if current not in codes:
+            current = codes[0] if codes else ""
+        if code is None or code == current or current != self.part_code:
+            self.set_part(current)
+
     def set_part(self, code: str) -> None:
+        """Select a part and load its model in the background (READY / NOT SET UP)."""
         self.part.set(code)
-        pn = self.cfg.parts.get(code)
-        if pn is None:
+        self._selected = code
+        part = self.parts.get(code) if code else None
+        if part is None:
+            self.problems = ["unknown part number" if code else "no part selected"]
+            self._loading = ""
             self.part_info.configure(text="Scan a barcode or choose a part number." if not code else
-                                     f"{code} is not a known part number (add it on the Parts tab).")
+                                     f"{code} is not a known part number.")
             return
-        rows = "\n".join(f"Row {r}: " + ", ".join(row) for r, row in enumerate(pn.pattern, 1))
-        self.part_info.configure(text=f"{pn.description or 'No description'}  ·  {pn.cables} cables x {pn.rows} rows\n{rows}")
+        lines = [part.description or "No description"]
+        active = part.active()
+        if active is not None:
+            lines.append(f"Model {active.summary()}")
+        if part.master is not None:
+            pn = part.master
+            lines.append(f"Master {pn.cables} cables x {pn.rows} rows")
+            lines += [f"Row {r}: " + ", ".join(row) for r, row in enumerate(pn.pattern, 1)]
+        self.part_info.configure(text="\n".join(lines))
+        self.problems = ["loading"]
+        self._loading = code
+        if not self.busy and not self._showing_result:
+            self.banner.show("LOADING", style.IDLE, f"Loading the model of {code}")
+        self.dispatcher.run_task(lambda: self.station.prepare(code), lambda p: self._prepared(code, p),
+                                 lambda e: self._prepared(code, [str(e)]))
+
+    def _prepared(self, code: str, problems: list[str]) -> None:
+        if code != self.part_code:
+            return  # another part was chosen meanwhile
+        self._loading = ""
+        self.problems = list(problems)
+        if self.busy or self._showing_result:
+            return
+        if problems:
+            self.banner.show("NOT SET UP", style.WARN, f"{code}: " + "; ".join(problems) + "\n(see Model Setup)")
+        else:
+            self.banner.show("READY", style.IDLE, f"{code} selected")
 
     def _change_part(self, code: str) -> None:
         st = self.station.lock.state
@@ -106,22 +155,22 @@ class InspectPage(ttk.Frame):
             self.part.set(st.part_number)
             self.banner.show("LOCKED", style.NG, "Resolve the NG before changing the part")
             return
+        self._showing_result = False
         self.set_part(code)
-        if code in self.cfg.parts:
-            self.banner.show("READY", style.IDLE, f"{code} selected")
 
     def on_scan(self) -> None:
         """Enter in the part box: a barcode scanner types the code followed by Enter."""
         text = self.part.get()
-        s = parse_scan(text, self.cfg.barcode, set(self.cfg.parts))
+        s = parse_scan(text, self.cfg.barcode, set(self.parts.codes()))
+        st = self.station.lock.state
         if s.kind == "operator":
             self.operator.delete(0, "end")
             self.operator.insert(0, s.value)
-            self.set_part(self.station.lock.state.part_number if self.station.lock.locked else "")
+            self.part.set(st.part_number if st.locked else self._selected)
         elif s.kind == "part":
             self._change_part(s.value)
         else:
-            self.set_part(text.strip())
+            self.part.set(st.part_number if st.locked else self._selected)
             self.banner.show("UNKNOWN", style.WARN, f"Not a known part number: {text.strip()[:30]}")
 
     def focus_scan(self) -> None:
@@ -168,12 +217,18 @@ class InspectPage(ttk.Frame):
         if self.busy:
             return
         part = self.part_code
-        if part not in self.cfg.parts:
+        if part not in self.parts:
             self.banner.show("NO PART", style.WARN, "Scan or choose a part number first")
             return
         ok, why = self.station.can_inspect(part)
         if not ok:
             self.banner.show("LOCKED", style.NG, why)
+            return
+        if self._loading == part:
+            self.banner.show("LOADING", style.IDLE, f"The model of {part} is still loading")
+            return
+        if self.problems:
+            self.banner.show("NOT SET UP", style.WARN, f"{part}: " + "; ".join(self.problems) + "\n(see Model Setup)")
             return
         self.busy = True
         self.inspect_btn.configure(state="disabled", text="Inspecting ...")
@@ -190,7 +245,7 @@ class InspectPage(ttk.Frame):
         self._showing_result = True
         self.view.set_image(res.annotated)
         if rep.ok:
-            self.banner.show("OK", style.OK, f"{rep.part_number}: all {len(rep.positions)} clips correct")
+            self.banner.show("OK", style.OK, f"{rep.part_number}: all {len(rep.positions)} positions correct")
         else:
             n = len(rep.mismatches) + len(rep.extras)
             self.banner.show("NG", style.NG, rep.error or f"{n} wrong position(s) - see the list")
@@ -265,6 +320,7 @@ class InspectPage(ttk.Frame):
         self.stats.configure(text=f"Today: {rep.total} inspected  ·  {rep.ok} OK  ·  {rep.ng} NG  ({rep.ng_rate:.1%})")
 
     def on_show(self) -> None:
+        self.on_parts_changed()
         self.focus_scan()
 
     def stop(self) -> None:
