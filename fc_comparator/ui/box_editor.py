@@ -3,14 +3,17 @@
 Mouse
     left-drag on empty area   draw a new box with the current label (asks for one if there is none)
     click a box               select it; drag to move, drag a handle to resize
-    wheel                     zoom around the cursor
-    right- or middle-drag     pan
+    wheel                     scroll up / down (touchpad: two-finger scroll)
+    Shift+wheel               scroll left / right
+    Ctrl+wheel                zoom around the cursor
+    right- or middle-drag     pan in any direction
 Keys (canvas focused)
     1..9       label of the selected box / of new boxes
     Delete     remove the selected box
     Ctrl+Z     undo
     arrows     nudge the selected box (Shift = 10 px); without a selection:
-               Left/Right go to the previous/next image
+               Up/Down scroll, Left/Right go to the previous/next image
+    + / -      zoom in / out
     F          fit image to window
     Esc        deselect
 """
@@ -72,9 +75,17 @@ class AnnotationCanvas(tk.Canvas):
         for b in ("2", "3"):
             self.bind(f"<ButtonPress-{b}>", self._pan_start)
             self.bind(f"<B{b}-Motion>", self._pan_move)
-        self.bind("<MouseWheel>", lambda e: self._zoom(e, 1 if e.delta > 0 else -1))
-        self.bind("<Button-4>", lambda e: self._zoom(e, 1))
-        self.bind("<Button-5>", lambda e: self._zoom(e, -1))
+            self.bind(f"<ButtonRelease-{b}>", self._pan_end)
+        self.bind("<MouseWheel>", lambda e: self.scroll(0, -1 if e.delta > 0 else 1))
+        self.bind("<Shift-MouseWheel>", lambda e: self.scroll(-1 if e.delta > 0 else 1, 0))
+        self.bind("<Control-MouseWheel>", lambda e: self._zoom(e, 1 if e.delta > 0 else -1))
+        x11 = self.tk.call("tk", "windowingsystem") == "x11"
+        for button, sign in (("4", -1), ("5", 1)) if x11 else ():  # the wheel on Linux
+            self.bind(f"<Button-{button}>", lambda _e, s=sign: self.scroll(0, s))
+            self.bind(f"<Shift-Button-{button}>", lambda _e, s=sign: self.scroll(s, 0))
+            self.bind(f"<Control-Button-{button}>", lambda e, s=sign: self._zoom(e, -s))
+        for key, steps in (("plus", 1), ("equal", 1), ("KP_Add", 1), ("minus", -1), ("KP_Subtract", -1)):
+            self.bind(f"<Key-{key}>", lambda _e, s=steps: self._zoom(None, s))
         self.bind("<Enter>", lambda _e: self.focus_set())
         self.bind("<Delete>", lambda _e: self.delete_selected())
         self.bind("<BackSpace>", lambda _e: self.delete_selected())
@@ -309,24 +320,52 @@ class AnnotationCanvas(tk.Canvas):
         self.configure(cursor="fleur")
 
     def _pan_move(self, e) -> None:
-        if self._pan is None:
+        if self._pan is None or self.image is None:
             return
         x, y, ox, oy = self._pan
         self.ox = ox - (e.x - x) / self.scale
         self.oy = oy - (e.y - y) / self.scale
+        self._keep_in_view()
+        self.redraw()
+
+    def _pan_end(self, _e=None) -> None:
+        self._pan = None
+        self.configure(cursor="crosshair")
+
+    def scroll(self, dx: int, dy: int, fraction: float = 0.15) -> None:
+        """Move the view by ``fraction`` of the window per step (dy > 0: down, dx > 0: right)."""
+        if self.image is None:
+            return
+        w, h = max(self.winfo_width(), 50), max(self.winfo_height(), 50)
+        self.ox += dx * fraction * w / self.scale
+        self.oy += dy * fraction * h / self.scale
+        self._fitted = False
+        self._keep_in_view()
         self.redraw()
 
     def _zoom(self, e, steps: int) -> None:
+        """Zoom around the cursor (``e``) or, from the keyboard, around the window centre."""
         if self.image is None:
             return
         self._fitted = False
         ih, iw = self.image.shape[:2]
-        fit = min(max(self.winfo_width(), 50) / iw, max(self.winfo_height(), 50) / ih)
-        ix, iy = self.to_image(e.x, e.y)
+        w, h = max(self.winfo_width(), 50), max(self.winfo_height(), 50)
+        fit = min(w / iw, h / ih)
+        cx, cy = (e.x, e.y) if e is not None else (w / 2, h / 2)
+        ix, iy = self.to_image(cx, cy)
         self.scale = min(max(self.scale * (1.2 ** steps), fit * 0.5), 12.0)
-        self.ox, self.oy = ix - e.x / self.scale, iy - e.y / self.scale
+        self.ox, self.oy = ix - cx / self.scale, iy - cy / self.scale
+        self._keep_in_view()
         self.configure(cursor="crosshair")
         self.redraw()
+
+    def _keep_in_view(self) -> None:
+        """Never scroll past the image's edges; an image smaller than the window stays centred."""
+        ih, iw = self.image.shape[:2]
+        vw = max(self.winfo_width(), 50) / self.scale  # visible width / height in image pixels
+        vh = max(self.winfo_height(), 50) / self.scale
+        self.ox = (iw - vw) / 2 if iw <= vw else min(max(self.ox, 0.0), iw - vw)
+        self.oy = (ih - vh) / 2 if ih <= vh else min(max(self.oy, 0.0), ih - vh)
 
     # -- keys ----------------------------------------------------------------
     def _digit(self, n: int) -> None:
@@ -337,7 +376,9 @@ class AnnotationCanvas(tk.Canvas):
 
     def _arrow(self, d: tuple[int, int], step: int) -> None:
         if self.selected is None:
-            if d[1] == 0 and self.on_navigate:
+            if d[1] != 0:
+                self.scroll(0, d[1], 0.15 if step == 1 else 0.5)
+            elif self.on_navigate:
                 self.on_navigate(d[0])
             return
         if self.readonly:

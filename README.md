@@ -121,8 +121,9 @@ preview, every Capture adds a frame). Images are stored under the part, in `data
 You create the label names yourself (`red_clip`, `fork_left`, `tape` ...); there is no fixed list, and each part keeps
 its own labels. The first box drawn without a label asks for a new label name. Leave anything you don't care about
 unboxed - it is ignored. Click a box to select it, drag to move, drag the handles to resize, Delete removes it, 1-9
-picks a label, Ctrl+Z undoes; wheel zooms, right-drag pans, ← / → go to the previous / next image. Everything is saved
-automatically. Once a model exists, **Find objects** pre-marks an image with it, so you only correct mistakes.
+picks a label, Ctrl+Z undoes. The mouse wheel (or two-finger scroll) moves the image up / down, Shift+wheel left /
+right, Ctrl+wheel or + / - zoom, right-drag pans; with no box selected ↑ / ↓ scroll and ← / → go to the previous /
+next image. Everything is saved automatically. Once a model exists, **Find objects** pre-marks an image with it, so you only correct mistakes.
 **Labels...** renames, merges (rename to an existing name) or deletes a label on every image of the part (and in its
 master).
 

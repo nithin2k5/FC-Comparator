@@ -222,6 +222,41 @@ def test_part_that_is_not_set_up_cannot_be_inspected(app):
     assert page.banner.text == "NOT SET UP" and app.station.store.inspections() == []
 
 
+def test_scrolling_the_image_when_zoomed(app, dialogs):
+    """Wheel scrolls up/down, Shift+wheel sideways, Ctrl+wheel zooms; the view stays on the image."""
+    assert login(app, dialogs)
+    setup = app.pages["setup"]
+    setup.open_code("P001")
+    images = setup.images
+    settle(app.root, lambda: images.canvas.image is not None)
+    c = images.canvas
+    ih, iw = c.image.shape[:2]
+    oy_fitted = c.oy
+    c.scroll(0, 1)  # the whole image fits: nothing to scroll
+    assert c.oy == pytest.approx(oy_fitted)
+
+    c._zoom(Ev(c.winfo_width() / 2, c.winfo_height() / 2), 6)  # zoomed in (Ctrl+wheel)
+    vh = c.winfo_height() / c.scale
+    top = c.oy
+    c.event_generate("<MouseWheel>", delta=-120, x=10, y=10)  # wheel down
+    assert c.oy > top
+    for _ in range(20):
+        c._arrow((0, -1), 10)  # Shift+Up with no box selected
+    assert c.oy == pytest.approx(0.0)  # stops at the top edge
+    for _ in range(100):
+        c._arrow((0, 1), 1)  # Down arrow
+    assert c.oy == pytest.approx(ih - vh)  # ... and at the bottom edge
+    left = c.ox
+    c.event_generate("<Shift-MouseWheel>", delta=-120, x=10, y=10)
+    assert c.ox > left
+    c._pan_start(Ev(100, 100))  # right-drag: up and down too
+    c._pan_move(Ev(100, 300))
+    c._pan_end()
+    assert c.oy < ih - vh and str(c.cget("cursor")) == "crosshair"
+    c._zoom(None, -1)  # "-" key
+    assert c.scale > 0
+
+
 def test_new_part_number_button(app, dialogs):
     assert login(app, dialogs)
     setup = app.pages["setup"]

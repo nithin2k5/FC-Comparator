@@ -187,7 +187,7 @@ class MasterEditor(tk.Toplevel):
         ttk.Button(tools, text="Delete box", command=lambda: self.canvas.delete_selected()).pack(side="left", padx=4)
         ttk.Button(tools, text="Undo", command=lambda: self.canvas.undo()).pack(side="left")
         ttk.Button(tools, text="Find objects again", command=self.detect).pack(side="left", padx=4)
-        ttk.Label(tools, text="Drag on the image to add a box · click a box to select · wheel to zoom",
+        ttk.Label(tools, text="Drag on the image to add a box · click a box to select · wheel scrolls, Ctrl+wheel zooms, right-drag pans",
                   style="Muted.TLabel").pack(side="left", padx=12)
 
         body = ttk.Frame(self, padding=10)

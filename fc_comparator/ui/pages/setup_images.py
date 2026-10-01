@@ -74,7 +74,7 @@ class ImagesPanel(ttk.Frame):
         self.canvas.grid(row=1, column=0, sticky="nsew")
         ttk.Label(mid, text="Drag to draw a box around an object, then pick its label  ·  leave anything you don't "
                             "care about unboxed  ·  click a box to select, drag to move, handles to resize  ·  "
-                            "Delete removes  ·  1-9 pick a label  ·  wheel zooms, right-drag pans  ·  "
+                            "Delete removes  ·  1-9 pick a label  ·  wheel scrolls (Shift: sideways), Ctrl+wheel zooms, right-drag pans  ·  "
                             "saved automatically", style="Muted.TLabel", wraplength=900,
                   justify="left").grid(row=2, column=0, sticky="w")
 
