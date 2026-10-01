@@ -12,7 +12,11 @@ from typing import Any
 
 from ...core.models import InspectionReport
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+# kinds of events that change what a part is inspected against (shown in the daily report)
+MODEL_CHANGE_KINDS = ("model_trained", "model_activated", "model_rollback", "master_saved", "labels_changed",
+                      "part_created", "part_deleted")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS inspections (
@@ -63,7 +67,8 @@ CREATE TABLE IF NOT EXISTS events (
     kind          TEXT NOT NULL,
     actor         TEXT NOT NULL DEFAULT '',
     detail        TEXT NOT NULL DEFAULT '',
-    inspection_id INTEGER REFERENCES inspections(id)
+    inspection_id INTEGER REFERENCES inspections(id),
+    part_number   TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_events_ts ON events(ts);
 """
@@ -79,6 +84,7 @@ class DailyReport:
     failing_positions: list[tuple[int, int, int]] = field(default_factory=list)  # (cable, row, count)
     failure_kinds: list[tuple[str, str, int]] = field(default_factory=list)  # (expected, found, count)
     acknowledgements: int = 0
+    model_changes: list[tuple[str, str, str, str]] = field(default_factory=list)  # (time, kind, part, detail)
 
     @property
     def ng_rate(self) -> float:
@@ -99,6 +105,10 @@ class DailyReport:
         if self.failure_kinds:
             lines.append("  Most frequent failures (found instead of expected):")
             lines += [f"    {f} instead of {e}: {n}" for e, f, n in self.failure_kinds]
+        if self.model_changes:
+            lines.append("  Model changes:")
+            lines += [f"    {ts[11:16]}  {part:<12} {kind.replace('_', ' ')}  {detail}"
+                      for ts, kind, part, detail in self.model_changes]
         return "\n".join(lines)
 
 
@@ -117,6 +127,8 @@ class InspectionStore:
             version = self._db.execute("PRAGMA user_version").fetchone()[0]
             if version == 1:
                 self._migrate_v1()
+            if version in (1, 2):
+                self._db.execute("ALTER TABLE events ADD COLUMN part_number TEXT NOT NULL DEFAULT ''")
             self._db.executescript(SCHEMA)
             self._db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -200,11 +212,12 @@ class InspectionStore:
         with self._lock:
             self._db.execute("UPDATE inspections SET image_path = ? WHERE id = ?", (image_path, inspection_id))
 
-    def log_event(self, kind: str, actor: str = "", detail: str = "", inspection_id: int | None = None) -> int:
+    def log_event(self, kind: str, actor: str = "", detail: str = "", inspection_id: int | None = None,
+                  part_number: str = "") -> int:
         with self._lock:
             cur = self._db.execute(
-                "INSERT INTO events (ts, kind, actor, detail, inspection_id) VALUES (?,?,?,?,?)",
-                (datetime.now().isoformat(timespec="milliseconds"), kind, actor, detail, inspection_id),
+                "INSERT INTO events (ts, kind, actor, detail, inspection_id, part_number) VALUES (?,?,?,?,?,?)",
+                (datetime.now().isoformat(timespec="milliseconds"), kind, actor, detail, inspection_id, part_number),
             )
             return cur.lastrowid
 
@@ -286,5 +299,8 @@ class InspectionStore:
         bad = [p for p in self.positions([r["id"] for r in rows]) if not p["ok"]]
         rep.failing_positions = [(c, r, n) for (c, r), n in Counter((p["cable"], p["row"]) for p in bad).most_common(top)]
         rep.failure_kinds = [(e, f, n) for (e, f), n in Counter((p["expected"], p["found"]) for p in bad).most_common(top)]
-        rep.acknowledgements = sum(e["kind"] == "ack" for e in self.events(start, end))
+        events = self.events(start, end)
+        rep.acknowledgements = sum(e["kind"] == "ack" for e in events)
+        rep.model_changes = [(e["ts"], e["kind"], e["part_number"], e["detail"])
+                             for e in events if e["kind"] in MODEL_CHANGE_KINDS]
         return rep

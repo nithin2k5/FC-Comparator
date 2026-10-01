@@ -1,8 +1,9 @@
-"""Typed application configuration backed by a single YAML file.
+"""Typed station configuration backed by a single YAML file.
 
-Every setting (camera, detector, thresholds, alert backend, clip types, part
-numbers, ...) lives in the YAML file. Relative paths are resolved against the
-config file's folder.
+The station's settings (camera, detection, alerts, login, PIN, storage ...) live
+in the YAML file. Part numbers - their images, labels, models and master - live
+in their own folders under ``storage.parts_dir``. Relative paths are resolved
+against the config file's folder.
 """
 
 from __future__ import annotations
@@ -17,8 +18,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
-from .core.models import PartNumber, Taxonomy
 
 log = logging.getLogger(__name__)
 
@@ -46,37 +45,32 @@ class CameraConfig:
 @dataclass
 class TemplateDetectorConfig:
     scale: float = 0.35  # images are matched at this scale for speed
-    max_per_class: int = 8  # templates per clip class (taken from marked boxes)
-    max_negatives: int = 48  # "not a clip" patches sampled/mined automatically from the marked images
-    min_score: float = 0.7  # normalized correlation needed to report a clip
+    max_per_class: int = 8  # templates per label (taken from labelled boxes)
+    max_negatives: int = 48  # "not an object" patches sampled/mined automatically from the labelled images
+    min_score: float = 0.7  # normalized correlation needed to report an object
     temperature: float = 0.04  # softmax temperature for class confidence
 
 
 @dataclass
 class DetectorConfig:
-    backend: str = "auto"  # auto = YOLO if model_path exists, else template | yolo | template
-    model_path: str = "models/clip_detector.pt"
+    # yolo = each part's active trained model; template = template matching on the part's
+    # labelled images (no training needed - for trials and tests)
+    backend: str = "yolo"
     min_score: float = 0.25  # detections below this are ignored entirely
     confidence_threshold: float = 0.6  # detections below this are "uncertain" (= NG)
     imgsz: int = 960
     device: str = "cpu"
-    # "auto" only switches to a trained model whose validation accuracy (at confidence_threshold)
-    # reaches this - an under-trained model never silently replaces working template matching.
+    # a trained model can only be put into use when its accuracy on the held-back images reaches this
     min_model_accuracy: float = 0.95
     template: TemplateDetectorConfig = field(default_factory=TemplateDetectorConfig)
 
 
 @dataclass
 class LayoutConfig:
-    match_tolerance: float = 1.0  # max centre distance in clip sizes (capped at 45% of the closest position spacing)
+    match_tolerance: float = 1.0  # max centre distance in object sizes (capped at 45% of the closest position spacing)
     max_shift_px: float = 200.0  # largest board shift accepted relative to the master image
     max_rotation_deg: float = 8.0
     min_matched_fraction: float = 0.5  # fewer matches => "board does not match this part's layout"
-
-
-@dataclass
-class DatasetConfig:
-    dir: str = "dataset"  # training images + the clip boxes marked on them
 
 
 @dataclass
@@ -86,9 +80,11 @@ class TrainingConfig:
     imgsz: int = 960
     batch: int = 8
     val_split: float = 0.2
-    mirror: bool = True  # add mirrored copies (swapping mirror classes such as fork_left/right)
+    mirror: bool = True  # add mirrored copies when labels contain left/right (swapped in the copy)
     patience: int = 30
     workdir: str = "runs/detector"
+    min_images: int = 5  # labelled images needed before training
+    min_per_label: int = 3  # boxes every label needs before training
 
 
 @dataclass
@@ -131,17 +127,25 @@ class AlertConfig:
 
 
 @dataclass
-class SecurityConfig:
-    # Passwords are PBKDF2 hashes, see fc_comparator.security. Empty = nobody can log in / acknowledge.
-    login_user: str = "nice"
-    login_password: str = (  # default password: nice1234
+class AuthConfig:
+    """The model login: needed for Model Setup and for the commands that change a model."""
+
+    user: str = "nice"
+    # PBKDF2 hash, see station.security. Empty = nobody can log in. Default password: nice1234
+    password: str = (
         "pbkdf2_sha256$200000$018ae44a90f8104c8d1feee1df463e2c$e313d84171de1c68a126161c0b6b599aa36a20b6a3de29fabff9ba1e8887ef9b")
-    supervisor_pin: str = ""
+    setup_timeout_min: float = 10.0  # Model Setup closes after this long without input
+
+
+@dataclass
+class SecurityConfig:
+    supervisor_pin: str = ""  # PBKDF2 hash; releases the NG lock. Empty = nobody can release it
     lock_on_ng: bool = True
 
 
 @dataclass
 class StorageConfig:
+    parts_dir: str = "data/parts"  # one folder per part number: images, labels, models, master
     database: str = "data/inspections.db"
     image_dir: str = "data/images"
     save_ok_every_n: int = 20  # 0 = never save OK images
@@ -171,18 +175,16 @@ class UiConfig:
 class AppConfig:
     station: StationConfig = field(default_factory=StationConfig)
     camera: CameraConfig = field(default_factory=CameraConfig)
-    taxonomy: Taxonomy = field(default_factory=Taxonomy)
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     layout: LayoutConfig = field(default_factory=LayoutConfig)
-    dataset: DatasetConfig = field(default_factory=DatasetConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     alert: AlertConfig = field(default_factory=AlertConfig)
+    auth: AuthConfig = field(default_factory=AuthConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     barcode: BarcodeConfig = field(default_factory=BarcodeConfig)
     trigger: TriggerConfig = field(default_factory=TriggerConfig)
     ui: UiConfig = field(default_factory=UiConfig)
-    parts: dict[str, PartNumber] = field(default_factory=dict)
 
     # Not serialized: folder used to resolve relative paths and the file loaded from.
     base_dir: Path = field(default_factory=Path.cwd, repr=False, compare=False)
@@ -195,17 +197,18 @@ class AppConfig:
 
     def validate(self) -> list[str]:
         """Return a list of problems (empty when the config is usable)."""
-        problems = list(self.taxonomy.validate())
-        for pn in self.parts.values():
-            try:
-                pn.validate(self.taxonomy)
-            except ValueError as exc:
-                problems.append(str(exc))
+        problems = []
         d = self.detector
         if not 0.0 <= d.min_score <= d.confidence_threshold <= 1.0:
             problems.append("need 0 <= detector.min_score <= detector.confidence_threshold <= 1")
-        if d.backend not in ("auto", "yolo", "template"):
-            problems.append(f"detector.backend must be auto, yolo or template (got {d.backend!r})")
+        if not 0.0 <= d.min_model_accuracy <= 1.0:
+            problems.append("detector.min_model_accuracy must be between 0 and 1")
+        if d.backend not in ("yolo", "template"):
+            problems.append(f"detector.backend must be yolo or template (got {d.backend!r})")
+        if self.auth.setup_timeout_min <= 0:
+            problems.append("auth.setup_timeout_min must be greater than 0")
+        if self.training.min_images < 2 or self.training.min_per_label < 1:
+            problems.append("training.min_images must be at least 2 and training.min_per_label at least 1")
         return problems
 
     # ---- serialization -------------------------------------------------
@@ -215,30 +218,41 @@ class AppConfig:
             if f.name in ("base_dir", "path"):
                 continue
             value = getattr(self, f.name)
-            if f.name == "parts":
-                out[f.name] = {code: pn.to_dict() for code, pn in value.items()}
-            elif f.name == "taxonomy":
-                out[f.name] = value.to_dict()
-            elif dataclasses.is_dataclass(value):
-                out[f.name] = dataclasses.asdict(value)
-            else:
-                out[f.name] = value
+            out[f.name] = dataclasses.asdict(value) if dataclasses.is_dataclass(value) else value
         return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], base_dir: Path | None = None) -> "AppConfig":
-        data = dict(data or {})
-        if "annotations" in data and "dataset" not in data:  # older config files
-            data["dataset"] = data.pop("annotations")
-        data.pop("compare", None)
-        parts = {str(code): PartNumber.from_dict(code, spec) for code, spec in (data.pop("parts", None) or {}).items()}
-        taxonomy = Taxonomy.from_dict(data.pop("taxonomy", None))
-        cfg = _build(cls, data)
-        cfg.parts = parts
-        cfg.taxonomy = taxonomy
+        cfg = _build(cls, _migrate(dict(data or {})))
         if base_dir is not None:
             cfg.base_dir = Path(base_dir)
         return cfg
+
+
+def _migrate(data: dict[str, Any]) -> dict[str, Any]:
+    """Accept config files written before part numbers got their own folders."""
+    for key in ("compare", "annotations", "dataset", "taxonomy"):
+        data.pop(key, None)
+    if data.pop("parts", None):
+        log.warning("config: 'parts' is no longer read - part numbers live in storage.parts_dir; "
+                    "set their masters up again in Model Setup")
+    sec = dict(data.get("security") or {})
+    auth = dict(data.get("auth") or {})
+    if "login_user" in sec:
+        auth.setdefault("user", sec.pop("login_user"))
+    if "login_password" in sec:
+        auth.setdefault("password", sec.pop("login_password"))
+    if "security" in data:
+        data["security"] = sec
+    if auth:
+        data["auth"] = auth
+    if "detector" in data:
+        det = dict(data["detector"] or {})
+        det.pop("model_path", None)
+        if det.get("backend") == "auto":
+            det["backend"] = "yolo"
+        data["detector"] = det
+    return data
 
 
 def _build(cls: type, data: dict[str, Any]) -> Any:

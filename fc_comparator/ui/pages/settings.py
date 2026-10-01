@@ -1,7 +1,7 @@
-"""Settings: the everyday settings of config.yaml, the login and the supervisor PIN.
+"""Model Setup - station settings: camera, detection, tower light, model login and supervisor PIN.
 
-Rarely changed hardware details (GPIO pins, relay channels, Modbus coils ...) are
-edited in config/config.yaml directly.
+Everything is written back to config.yaml. Rarely changed hardware details (GPIO pins,
+relay channels, Modbus coils ...) are edited in config/config.yaml directly.
 """
 
 from __future__ import annotations
@@ -24,9 +24,9 @@ FIELDS = [
     ("Station & camera", "camera.file_path", "Image file (file source)", str, None),
     ("Station & camera", "storage.save_ok_every_n", "Save every Nth OK image", int, None),
     ("Station & camera", "ui.fullscreen", "Fullscreen (after restart)", bool, None),
-    ("Detection", "detector.backend", "Detector", str, ["auto", "yolo", "template"]),
+    ("Detection", "detector.backend", "Detection", str, ["yolo", "template"]),
     ("Detection", "detector.confidence_threshold", "Confidence threshold", float, None),
-    ("Detection", "detector.min_model_accuracy", "Model accuracy needed (auto)", float, None),
+    ("Detection", "detector.min_model_accuracy", "Accuracy a model needs", float, None),
     ("Detection", "detector.device", "Device (cpu / 0 = GPU)", str, None),
     ("Detection", "training.epochs", "Training epochs", int, None),
     ("Detection", "training.imgsz", "Training image size", int, None),
@@ -36,15 +36,17 @@ FIELDS = [
     ("Alerts", "alert.usb_relay.port", "USB relay port", str, None),
     ("Alerts", "alert.modbus.host", "PLC address (Modbus)", str, None),
     ("Security", "security.lock_on_ng", "Lock the station after an NG", bool, None),
+    ("Security", "auth.setup_timeout_min", "Model Setup closes after (min)", float, None),
 ]
 
 
-class SettingsPage(ttk.Frame):
-    def __init__(self, master, app):
+class SettingsPanel(ttk.Frame):
+    def __init__(self, master, page):
         super().__init__(master, padding=12)
-        self.app = app
-        self.station = app.station
-        self.cfg = app.cfg
+        self.page = page
+        self.app = page.app
+        self.station = page.station
+        self.cfg = page.cfg
         self.vars: dict[str, tuple[tk.Variable, type]] = {}
 
         sections: dict[str, ttk.LabelFrame] = {}
@@ -72,14 +74,16 @@ class SettingsPage(ttk.Frame):
 
         sec = sections["Security"]
         r = sec.grid_size()[1]
-        ttk.Button(sec, text="Change login...", command=self.change_login).grid(row=r, column=0, sticky="w", pady=(8, 2))
+        ttk.Button(sec, text="Change model login...", command=self.change_login).grid(row=r, column=0, sticky="w",
+                                                                                      pady=(8, 2))
         ttk.Button(sec, text="Change supervisor PIN...", command=self.change_pin).grid(row=r + 1, column=0, sticky="w")
         alerts = sections["Alerts"]
         ttk.Button(alerts, text="Test tower light", command=self.test_alert).grid(
             row=alerts.grid_size()[1], column=0, sticky="w", pady=(8, 0))
         det = sections["Detection"]
-        self.classes = ttk.Label(det, text="", style="Muted.TLabel", wraplength=420, justify="left")
-        self.classes.grid(row=det.grid_size()[1], column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(det, text="yolo = each part's trained model;  template = template matching on the part's labelled "
+                            "images (trials only)", style="Muted.TLabel", wraplength=420, justify="left").grid(
+            row=det.grid_size()[1], column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         bar = ttk.Frame(self)
         bar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -106,8 +110,6 @@ class SettingsPage(ttk.Frame):
         for path, (var, kind) in self.vars.items():
             v = self._get(path)
             var.set(bool(v) if kind is bool else ("" if v is None else str(v)))
-        self.classes.configure(text="Clip types: " + ", ".join(self.cfg.taxonomy.classes)
-                                    + "\n(edit taxonomy in config.yaml; new types need marked examples and training)")
 
     def on_show(self) -> None:
         self.load()
@@ -132,8 +134,8 @@ class SettingsPage(ttk.Frame):
             return False
         save_config(self.cfg)
         issues = self.station.rebuild_io()
-        self.station.store.log_event("settings", self.app.user, "settings saved")
-        self.app.rebuild_detector()
+        self.station.reload()
+        self.station.store.log_event("settings", self.page.user, "settings saved")
         self.app.on_config_changed()
         if issues:
             show_error(self, "Saved, but:\n" + "\n".join(issues))
@@ -143,23 +145,23 @@ class SettingsPage(ttk.Frame):
 
     # -- security ----------------------------------------------------------------------
     def change_login(self) -> None:
-        user = ask_string(self, "Change login", "Username:", self.cfg.security.login_user)
+        user = ask_string(self, "Change model login", "User name:", self.cfg.auth.user)
         if user is None:
             return
-        first = ask_string(self, "Change login", "New password:", secret=True)
+        first = ask_string(self, "Change model login", "New password:", secret=True)
         if first is None:
             return
         if not user.strip() or len(first) < 4:
-            show_error(self, "Enter a username and a password of at least 4 characters.")
+            show_error(self, "Enter a user name and a password of at least 4 characters.")
             return
-        if ask_string(self, "Change login", "Repeat the new password:", secret=True) != first:
+        if ask_string(self, "Change model login", "Repeat the new password:", secret=True) != first:
             show_error(self, "The passwords did not match; nothing was changed.")
             return
-        self.cfg.security.login_user = user.strip()
-        self.cfg.security.login_password = hash_secret(first)
+        self.cfg.auth.user = user.strip()
+        self.cfg.auth.password = hash_secret(first)
         save_config(self.cfg)
-        self.station.store.log_event("security", self.app.user, "login changed")
-        show_info(self, "The login was changed.", "Saved")
+        self.station.store.log_event("security", self.page.user, "model login changed")
+        show_info(self, "The model login was changed.", "Saved")
 
     def change_pin(self) -> None:
         first = ask_string(self, "Supervisor PIN", "New supervisor PIN:", secret=True)
@@ -174,7 +176,7 @@ class SettingsPage(ttk.Frame):
         self.cfg.security.supervisor_pin = hash_secret(first)
         self.station.lock.pin_hash = self.cfg.security.supervisor_pin
         save_config(self.cfg)
-        self.station.store.log_event("security", self.app.user, "supervisor PIN changed")
+        self.station.store.log_event("security", self.page.user, "supervisor PIN changed")
         show_info(self, "The supervisor PIN was changed.", "Saved")
 
     def test_alert(self) -> None:

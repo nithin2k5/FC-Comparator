@@ -1,17 +1,8 @@
 station: {name: Station-1}
 camera: {source: file, index: 0, backend: auto, width: 1920, height: 1080, fps: 30, autofocus: false, focus: null, exposure: null,
   warmup_frames: 5, file_path: ../dataset/images/20260930-144733-18d6c7.jpg}
-taxonomy:
-  classes: [round, small, fork_left, fork_right, grey_fork_left, grey_fork_right, metal_fork_left, metal_fork_right]
-  groups:
-    fork: [fork_left, fork_right]
-    grey_fork: [grey_fork_left, grey_fork_right]
-    metal_fork: [metal_fork_left, metal_fork_right]
-  mirror: {fork_left: fork_right, fork_right: fork_left, grey_fork_left: grey_fork_right, grey_fork_right: grey_fork_left,
-    metal_fork_left: metal_fork_right, metal_fork_right: metal_fork_left}
 detector:
-  backend: auto
-  model_path: ../models/clip_detector.pt
+  backend: yolo
   min_score: 0.25
   confidence_threshold: 0.6
   imgsz: 960
@@ -19,9 +10,8 @@ detector:
   min_model_accuracy: 0.95
   template: {scale: 0.35, max_per_class: 8, max_negatives: 48, min_score: 0.7, temperature: 0.04}
 layout: {match_tolerance: 1.0, max_shift_px: 200.0, max_rotation_deg: 8.0, min_matched_fraction: 0.5}
-dataset: {dir: ../dataset}
 training: {base_model: ../models/yolo11n.pt, epochs: 120, imgsz: 960, batch: 8, val_split: 0.2, mirror: true, patience: 40,
-  workdir: ../runs/detector}
+  workdir: ../runs/detector, min_images: 5, min_per_label: 3}
 alert:
   backend: console
   buzzer_mode: pulse
@@ -30,11 +20,11 @@ alert:
   gpio: {green_pin: 17, red_pin: 27, buzzer_pin: 22, active_high: true}
   usb_relay: {port: COM3, baudrate: 9600, green_channel: 1, red_channel: 2, buzzer_channel: 3}
   modbus: {host: 192.168.0.10, port: 502, unit_id: 1, green_coil: 0, red_coil: 1, buzzer_coil: 2, timeout: 0.5}
-security: {login_user: nice, login_password: pbkdf2_sha256$200000$018ae44a90f8104c8d1feee1df463e2c$e313d84171de1c68a126161c0b6b599aa36a20b6a3de29fabff9ba1e8887ef9b,
-  supervisor_pin: pbkdf2_sha256$200000$c32465c0d7d720e41950572856528d15$40fbbf25cb42ce6df878f046b78d277874913140f99a0328d788452966c95f90,
+auth: {user: nice, password: pbkdf2_sha256$200000$018ae44a90f8104c8d1feee1df463e2c$e313d84171de1c68a126161c0b6b599aa36a20b6a3de29fabff9ba1e8887ef9b,
+  setup_timeout_min: 10.0}
+security: {supervisor_pin: pbkdf2_sha256$200000$c32465c0d7d720e41950572856528d15$40fbbf25cb42ce6df878f046b78d277874913140f99a0328d788452966c95f90,
   lock_on_ng: true}
-storage: {database: ../data/inspections.db, image_dir: ../data/images, save_ok_every_n: 20, save_raw_images: false}
+storage: {parts_dir: ../data/parts, database: ../data/inspections.db, image_dir: ../data/images, save_ok_every_n: 20, save_raw_images: false}
 barcode: {part_pattern: '^(?P<part>[A-Za-z0-9\-_]+)$', operator_prefix: 'OP:'}
 trigger: {key: F9, gpio_pin: null}
 ui: {fullscreen: false, preview_fps: 15}
-parts: {}

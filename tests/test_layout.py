@@ -12,7 +12,7 @@ from fc_comparator.core.models import Box, Taxonomy
 from fc_comparator.vision.synthetic import Geometry, render_marked_board
 
 P001 = ["round", "fork_left", "small", "round"]
-TAX = Taxonomy()
+TAX = Taxonomy.from_labels(["round", "fork_left", "small"])
 
 
 def boxes_for(columns, **kw):

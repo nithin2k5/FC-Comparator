@@ -14,7 +14,9 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from ..core.models import FORK, FORK_LEFT, FORK_RIGHT, MISSING, ROUND, SMALL, Box
+from ..core.models import MISSING, Box
+
+ROUND, SMALL, FORK, FORK_LEFT, FORK_RIGHT = "round", "small", "fork", "fork_left", "fork_right"
 
 WIDTH, HEIGHT = 1280, 960
 CONNECTOR_Y = (95, 185)

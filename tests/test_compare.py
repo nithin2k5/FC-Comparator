@@ -23,7 +23,7 @@ def bad(results):
 
 
 def test_master_all_ok():
-    found = board([["fork_left", "fork_right", "small", "fork"]] * 4)
+    found = board([["fork", "fork", "small", "fork"]] * 4)
     res = compare(found, P002)
     assert len(res) == 16 and all(p.ok for p in res)
     assert [(p.cable, p.row) for p in res][:5] == [(1, 1), (1, 2), (1, 3), (1, 4), (2, 1)]
@@ -68,7 +68,7 @@ def test_missing_and_uncertain_never_ok():
     res = compare(found, P001)
     assert bad(res) == [(1, 2), (3, 3), (4, 4)]
     reasons = {p.key: p.reason for p in res if not p.ok}
-    assert reasons[(1, 2)] == "clip missing"
+    assert reasons[(1, 2)] == "object missing"
     assert reasons[(3, 3)] == "low confidence"
 
 
@@ -85,21 +85,22 @@ def test_fork_orientation_checked_when_specified():
     assert "orientation" in next(p for p in res if p.key == (3, 1)).reason
 
 
-def test_group_accepts_either_orientation_but_not_another_colour():
-    part = PartNumber("PG", [["grey_fork", "fork"]])
-    assert all(p.ok for p in compare(board([["grey_fork_left"], ["fork_right"]]), part))
-    assert bad(compare(board([["fork_left"], ["metal_fork_right"]]), part)) == [(1, 1), (2, 1)]
-
-
 def test_invalid_part():
-    with pytest.raises(ValueError, match="one clip per cable"):
+    with pytest.raises(ValueError, match="one object per cable"):
         compare({}, PartNumber("PB", [["round", "round"], ["round"]]))
-    with pytest.raises(ValueError, match="invalid pattern labels"):
-        compare({}, PartNumber("PB", [["round", "banana"]]))
+
+
+def test_labels_are_the_parts_own():
+    """Any label name works; a left/right twin of the expected label is a wrong orientation."""
+    part = PartNumber("PT", [["red_clip", "tape_left"]])
+    assert all(p.ok for p in compare(board([["red_clip"], ["tape_left"]]), part))
+    res = compare(board([["tape_left"], ["tape_right"]]), part)
+    assert bad(res) == [(1, 1), (2, 1)]
+    assert res[1].reason == "wrong orientation: tape_right != tape_left"
 
 
 def test_configurable_layout():
-    part = PartNumber("P6", [[lbl] * 5 for lbl in ["round", "small", "fork", "round", "small", "fork"]])
+    part = PartNumber("P6", [[lbl] * 5 for lbl in ["round", "small", "fork_left", "round", "small", "fork_right"]])
     found = board([["round", "small", "fork_left", "round", "small", "fork_right"]] * 5)
     res = compare(found, part)
     assert len(res) == 30 and all(p.ok for p in res)

@@ -1,4 +1,4 @@
-"""Detector interface: find every clip in a board image."""
+"""Detector interface: find every labelled object in a board image."""
 
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ from ...core.models import Box
 
 class Detector(ABC):
     name: str = "detector"
-    note: str = ""  # why this detector was chosen (shown in the UI)
+    note: str = ""  # what this detector is (shown in the UI)
+    version: str = ""  # model version for trained models
 
     @property
     @abstractmethod
