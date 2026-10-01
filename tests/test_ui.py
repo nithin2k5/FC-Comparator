@@ -222,6 +222,22 @@ def test_part_that_is_not_set_up_cannot_be_inspected(app):
     assert page.banner.text == "NOT SET UP" and app.station.store.inspections() == []
 
 
+def test_new_part_number_button(app, dialogs):
+    assert login(app, dialogs)
+    setup = app.pages["setup"]
+    dialogs["answers"] += ["P-77", "Harness E"]
+    part = setup.new_part()
+    assert part is not None and part.code == "P-77" and part.description == "Harness E" and setup.part is part
+    assert "P-77" in setup.code.cget("values") and "P-77" in app.inspect.part.cget("values")
+    assert app.station.store.events()[-1]["kind"] == "part_created"
+
+    dialogs["answers"] += ["P001"]  # exists: opened instead
+    assert setup.new_part() is None and setup.part.code == "P001" and "exists already" in dialogs["error"][-1]
+    dialogs["answers"] += ["bad code"]
+    assert setup.new_part() is None and "Invalid part number" in dialogs["error"][-1]
+    assert setup.new_part() is None  # cancelled
+
+
 def test_new_part_images_labels_and_master(app, dialogs, tmp_path):
     """Model Setup: create P004, add and label an image, rename a label, set the master, inspect it."""
     assert login(app, dialogs)

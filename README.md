@@ -109,8 +109,9 @@ Model Setup is the only protected area. Opening the tab asks for the model login
 the tab, or after 10 minutes without input (`auth.setup_timeout_min`). While the station is NG-locked, Model Setup
 cannot be opened. Everything about creating or changing a model happens here, one part number at a time.
 
-**a. Select the part number.** Pick one from the list, or type / scan a new one and press Enter (you are asked to
-confirm and for a description). The line below shows the part's model in use, its accuracy, when it was trained, how
+**a. Select the part number.** Pick one from the list. To add a part number, press **New part number...** and type
+or scan its code, then give an optional description (typing / scanning a new code into the list and pressing Enter
+works too). Codes use letters, digits, `.`, `_` and `-`. The line below shows the part's model in use, its accuracy, when it was trained, how
 many images are labelled, the master, and whether the part is ready for inspection.
 
 **b. Add images** (Images & labels): **Add images...**, **Add folder...**, or **Capture from camera...** (live

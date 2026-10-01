@@ -35,8 +35,9 @@ class ModelSetupPage(ttk.Frame):
         self.code.pack(side="left", padx=8)
         self.code.bind("<Return>", lambda _e: self.open_code(self.code.get()))
         self.code.bind("<<ComboboxSelected>>", lambda _e: self.open_code(self.code.get()))
-        ttk.Button(bar, text="Open / create", style="Accent.TButton",
-                   command=lambda: self.open_code(self.code.get())).pack(side="left")
+        ttk.Button(bar, text="Open", command=lambda: self.open_code(self.code.get())).pack(side="left")
+        ttk.Button(bar, text="New part number...", style="Accent.TButton", command=self.new_part).pack(
+            side="left", padx=(8, 0))
         ttk.Button(bar, text="Description...", command=self.edit_description).pack(side="left", padx=(8, 0))
         self.delete_btn = ttk.Button(bar, text="Delete part", command=self.delete_part)
         self.delete_btn.pack(side="right")
@@ -113,14 +114,36 @@ class ModelSetupPage(ttk.Frame):
             if not ask_yes_no(self, f"{code} is a new part number. Create it?", "New part number"):
                 self.code.set(self.part.code if self.part else "")
                 return None
-            desc = ask_string(self, "New part number", f"Description of {code} (optional):") or ""
-            part = self.station.parts.create(code, desc)
-            self.set_part(part)
-            self.log("part_created", desc)
-            self.refresh_codes()
-            self.app.parts_changed(code)
-        else:
-            self.set_part(part)
+            return self._create(code)
+        self.set_part(part)
+        return part
+
+    def new_part(self) -> Part | None:
+        """The "New part number..." button: ask for the code (typed or scanned) and a description."""
+        if self.train.training:
+            show_error(self, "Training is running. Wait for it or cancel it before adding a part.")
+            return None
+        text = ask_string(self, "New part number", "Part number (type it or scan its barcode):")
+        if not text or not text.strip():
+            return None
+        try:
+            code = check_code(text)
+        except ValueError as exc:
+            show_error(self, str(exc))
+            return None
+        if code in self.station.parts:
+            show_error(self, f"{code} exists already - it is now open.", "New part number")
+            self.set_part(self.station.parts.get(code))
+            return None
+        return self._create(code)
+
+    def _create(self, code: str) -> Part:
+        desc = ask_string(self, "New part number", f"Description of {code} (optional):") or ""
+        part = self.station.parts.create(code, desc)
+        self.set_part(part)
+        self.log("part_created", desc)
+        self.refresh_codes()
+        self.app.parts_changed(code)
         return part
 
     def set_part(self, part: Part | None) -> None:
@@ -135,7 +158,7 @@ class ModelSetupPage(ttk.Frame):
         """The part's status line: model, accuracy, when trained, labelled images, master, readiness."""
         part = self.part
         if part is None:
-            self.info.configure(text="Choose a part number, or type / scan a new one and press Enter.",
+            self.info.configure(text="Choose a part number, or add one with \"New part number...\".",
                                 foreground=style.MUTED)
             return
         part.store.reload()
